@@ -106,7 +106,7 @@ function logSecurityEvent($attackType, $description, $severity = 'medium', $acti
 
 class AIThreatDetectionMiddleware {
     private const DEFAULT_SERVICE_URL = 'http://127.0.0.1:5000/predict';
-    private const DEFAULT_TIMEOUT_MS = 250;
+    private const DEFAULT_TIMEOUT_MS = 100;
     private const MAX_PAYLOAD_BYTES = 20000;
     private static bool $hasRun = false;
 
@@ -122,6 +122,10 @@ class AIThreatDetectionMiddleware {
         }
 
         $payload = self::buildInputVector($_GET ?? [], $_POST ?? []);
+        if (empty($payload['request_data']['get']) && empty($payload['request_data']['post'])) {
+            return;
+        }
+
         $prediction = self::analyzeWithModel($payload);
         if (!($prediction['is_attack'] ?? false)) {
             return;
@@ -181,14 +185,22 @@ class AIThreatDetectionMiddleware {
 
         if (is_array($value)) {
             $limitedArray = [];
-            $count = 0;
-            foreach ($value as $key => $item) {
-                if ($count >= 100) {
-                    $limitedArray['_items_truncated'] = true;
-                    break;
-                }
-                $limitedArray[$key] = self::truncateValue($item, $depth + 1);
-                $count++;
+            $keys = array_keys($value);
+            $totalItems = count($keys);
+            $headKeys = array_slice($keys, 0, 50);
+            $tailKeys = $totalItems > 100 ? array_slice($keys, -50) : [];
+
+            foreach ($headKeys as $key) {
+                $limitedArray[$key] = self::truncateValue($value[$key], $depth + 1);
+            }
+
+            if ($totalItems > 100) {
+                $limitedArray['_items_truncated'] = true;
+                $limitedArray['_truncated_count'] = $totalItems - 100;
+            }
+
+            foreach ($tailKeys as $key) {
+                $limitedArray[$key] = self::truncateValue($value[$key], $depth + 1);
             }
             return $limitedArray;
         }
@@ -293,11 +305,7 @@ class AIThreatDetectionMiddleware {
         $scheme = strtolower((string)($parts['scheme'] ?? 'http'));
         $isLocalhost = in_array($host, ['127.0.0.1', 'localhost', '::1'], true);
 
-        if ($isLocalhost) {
-            return true;
-        }
-
-        return $scheme === 'https';
+        return $isLocalhost && in_array($scheme, ['http', 'https'], true);
     }
 
     private static function blockRequest(): void {
