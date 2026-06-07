@@ -106,8 +106,11 @@ function logSecurityEvent($attackType, $description, $severity = 'medium', $acti
 
 class AIThreatDetectionMiddleware {
     private const DEFAULT_SERVICE_URL = 'http://127.0.0.1:5000/predict';
-    private const DEFAULT_TIMEOUT_MS = 100;
+    private const DEFAULT_CONNECT_TIMEOUT_MS = 100;
+    private const DEFAULT_TIMEOUT_MS = 500;
     private const MAX_PAYLOAD_BYTES = 20000;
+    private const MAX_STRING_BYTES = 512;
+    private const MAX_ARRAY_ITEMS = 100;
     private static bool $hasRun = false;
 
     public static function handleGlobalRequest(): void {
@@ -185,29 +188,23 @@ class AIThreatDetectionMiddleware {
 
         if (is_array($value)) {
             $limitedArray = [];
-            $keys = array_keys($value);
-            $totalItems = count($keys);
-            $headKeys = array_slice($keys, 0, 50);
-            $tailKeys = $totalItems > 100 ? array_slice($keys, -50) : [];
+            $keys = array_slice(array_keys($value), 0, self::MAX_ARRAY_ITEMS);
+            $totalItems = count($value);
 
-            foreach ($headKeys as $key) {
+            foreach ($keys as $key) {
                 $limitedArray[$key] = self::truncateValue($value[$key], $depth + 1);
             }
 
-            if ($totalItems > 100) {
+            if ($totalItems > self::MAX_ARRAY_ITEMS) {
                 $limitedArray['_items_truncated'] = true;
-                $limitedArray['_truncated_count'] = $totalItems - 100;
-            }
-
-            foreach ($tailKeys as $key) {
-                $limitedArray[$key] = self::truncateValue($value[$key], $depth + 1);
+                $limitedArray['_truncated_count'] = $totalItems - self::MAX_ARRAY_ITEMS;
             }
             return $limitedArray;
         }
 
         if (is_string($value)) {
-            if (strlen($value) > 512) {
-                return substr($value, 0, 512) . '...[truncated]';
+            if (strlen($value) > self::MAX_STRING_BYTES) {
+                return substr($value, 0, self::MAX_STRING_BYTES) . '...[truncated]';
             }
             return $value;
         }
@@ -258,8 +255,8 @@ class AIThreatDetectionMiddleware {
             CURLOPT_HTTPHEADER => ['Content-Type: application/json'],
             CURLOPT_POSTFIELDS => $body,
             CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_CONNECTTIMEOUT_MS => self::DEFAULT_TIMEOUT_MS,
-            CURLOPT_TIMEOUT_MS => self::DEFAULT_TIMEOUT_MS
+            CURLOPT_CONNECTTIMEOUT_MS => self::readTimeoutFromEnv('WAF_ML_CONNECT_TIMEOUT_MS', self::DEFAULT_CONNECT_TIMEOUT_MS),
+            CURLOPT_TIMEOUT_MS => self::readTimeoutFromEnv('WAF_ML_TIMEOUT_MS', self::DEFAULT_TIMEOUT_MS)
         ]);
 
         $response = curl_exec($ch);
@@ -303,9 +300,32 @@ class AIThreatDetectionMiddleware {
 
         $host = strtolower((string)$parts['host']);
         $scheme = strtolower((string)($parts['scheme'] ?? 'http'));
-        $isLocalhost = in_array($host, ['127.0.0.1', 'localhost', '::1'], true);
+        $trustedHostsRaw = getenv('WAF_ML_TRUSTED_HOSTS') ?: '127.0.0.1,localhost,::1';
+        $trustedHosts = array_filter(array_map('trim', explode(',', strtolower($trustedHostsRaw))));
 
-        return $isLocalhost && in_array($scheme, ['http', 'https'], true);
+        if (!in_array($host, $trustedHosts, true)) {
+            return false;
+        }
+
+        if (in_array($host, ['127.0.0.1', 'localhost', '::1'], true)) {
+            return in_array($scheme, ['http', 'https'], true);
+        }
+
+        return $scheme === 'https';
+    }
+
+    private static function readTimeoutFromEnv(string $name, int $default): int {
+        $raw = getenv($name);
+        if ($raw === false || $raw === '') {
+            return $default;
+        }
+
+        $value = (int)$raw;
+        if ($value <= 0) {
+            return $default;
+        }
+
+        return $value;
     }
 
     private static function blockRequest(): void {
