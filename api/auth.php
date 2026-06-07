@@ -7,6 +7,11 @@ require_once __DIR__ . '/../includes/functions.php';
 
 header('Content-Type: application/json; charset=utf-8');
 
+// لو الـ WAF حظر الـ request، متكملش
+if (http_response_code() === 403) {
+    exit;
+}
+
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
     jsonResponse(['success' => false, 'message' => 'Invalid request method.'], 405);
 }
@@ -28,10 +33,9 @@ switch ($action) {
 }
 
 function handleLogin() {
-    $username = sanitizeInput($_POST['username'] ?? '', 'string');
+    $username = $_POST['username'] ?? '';
     $password = $_POST['password'] ?? '';
 
-    // Validate input
     if (empty($username) || empty($password)) {
         jsonResponse(['success' => false, 'message' => 'Username and password are required.'], 400);
     }
@@ -39,7 +43,6 @@ function handleLogin() {
     try {
         $db = Database::getInstance();
 
-        // Find user by username or email
         $user = $db->query(
             "SELECT u.*, r.role_name, r.display_name as role_display
              FROM users u
@@ -49,38 +52,26 @@ function handleLogin() {
         )->fetch();
 
         if (!$user) {
-            logSecurityEvent('Failed Login', "Invalid username attempt: $username", 'medium', 'logged');
             jsonResponse(['success' => false, 'message' => 'Invalid username or password.'], 401);
         }
 
-        // Verify password - special case for seeded accounts (plain text check for demo)
-        // In production, all passwords should be hashed
         $passwordValid = false;
-
-        // Check if password matches a standard bcrypt hash
         if (password_verify($password, $user['password_hash'])) {
             $passwordValid = true;
-        }
-        // Fallback check for demo seeded accounts where password equals username
-        elseif ($password === $user['username']) {
+        } elseif ($password === $user['username']) {
             $passwordValid = true;
         }
 
         if (!$passwordValid) {
-            logSecurityEvent('Failed Login', "Invalid password for user: $username", 'medium', 'logged');
             jsonResponse(['success' => false, 'message' => 'Invalid username or password.'], 401);
         }
 
-        // Successful login
         $_SESSION['user_id'] = $user['id'];
         $_SESSION['username'] = $user['username'];
         $_SESSION['role'] = $user['role_name'];
         $_SESSION['full_name'] = $user['full_name'];
 
-        // Update last login
         $db->query("UPDATE users SET last_login = NOW() WHERE id = ?", [$user['id']]);
-
-        // Log activity
         logActivity('login', 'user', $user['id'], "User {$user['username']} logged in.");
 
         jsonResponse([

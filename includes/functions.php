@@ -1,15 +1,166 @@
 <?php
 /**
- * Faculty of Engineering at Shubra - Benha University
- * Utility Functions
+ * Faculty of Engineering - AI WAF Middleware + Functions
  */
 
+// 1️⃣ استدعي ملف الداتا بيز والـ Session أول حاجة خالص عشان الكلاسات تكون جاهزة
 require_once __DIR__ . '/db.php';
 
-// Start session if not already started
-if (session_status() === PHP_SESSION_NONE) {
-    session_start();
+if (session_status() === PHP_SESSION_NONE) session_start();
+// ========== AI THREAT DETECTION MIDDLEWARE ==========
+
+class AIThreatDetectionMiddleware
+{
+    private const SERVICE_URL = 'http://127.0.0.1:5005/predict';
+    private const CONNECT_TIMEOUT_MS = 500;
+    private const TIMEOUT_MS = 2000;
+    private static bool $hasRun = false;
+
+    public static function handleGlobalRequest(): void
+    {
+        if (self::$hasRun || PHP_SAPI === 'cli') return;
+        self::$hasRun = true;
+
+        $method = strtoupper($_SERVER['REQUEST_METHOD'] ?? 'GET');
+        if (!in_array($method, ['GET', 'POST'], true)) return;
+
+        // استبعاد ريكويستات الأيقونات والصور الصامتة عشان متسجلش دبل جوه اللوجات
+        // 1️⃣ استبعاد الأيقونات والصور
+        $uri = strtolower($_SERVER['REQUEST_URI'] ?? '');
+        if (str_contains($uri, 'favicon.ico') || preg_match('/\.(png|jpg|jpeg|gif|css|js|ico)$/', $uri)) {
+            return;
+        }
+
+        // 2️⃣ القفل الصارم: لو الـ Request ملوش حقول مبعوتة فعلياً في الـ GET والـ POST (ريكويست فاضي ناتج عن إعادة توجيه السيرفر للـ Error Page)
+        if (empty($_GET) && empty($_POST) && empty(file_get_contents('php://input'))) {
+            return;
+        }
+
+        $getData  = $_GET  ?? [];
+        $postData = $_POST ?? [];
+        
+        // 1️⃣ قراءة وتحليل الـ Raw Body عشان نقفش اللوجين والفورمز اللى مبعوتة بـ Fetch/AJAX
+        $rawBody = file_get_contents('php://input');
+        $bodyData = [];
+        
+        if (!empty($rawBody)) {
+            $contentType = strtolower($_SERVER['CONTENT_TYPE'] ?? '');
+            if (str_contains($contentType, 'application/json')) {
+                $decoded = json_decode($rawBody, true);
+                if (is_array($decoded)) $bodyData = $decoded;
+            } elseif (str_contains($contentType, 'application/x-www-form-urlencoded')) {
+                parse_str($rawBody, $parsedData);
+                if (is_array($parsedData)) $bodyData = $parsedData;
+            }
+        }
+
+        // دمج كل الداتا المبعوتة لضمان عدم هروب أي Input
+        $finalPost = array_merge($_POST, $postData, $bodyData);
+
+        $payload = [
+            'request_uri' => $_SERVER['REQUEST_URI'] ?? '',
+            'request_data' => [
+                'get'  => $getData,
+                'post' => $finalPost
+            ]
+        ];
+
+        // 2️⃣ إرسال الداتا لسيرفر الذكاء الاصطناعي لفحصها
+        $prediction = self::analyzeWithPythonService($payload);
+        if ($prediction === null) return;
+
+        // 3️⃣ لو تم رصد هجوم، بنسجله في الداتا بيز أولاً ليظهر في الـ Dashboard فوراً، ثم نطرده
+        if ($prediction['is_attack'] ?? false) {
+            self::logAttackToDatabase($prediction, $payload);
+            self::blockRequest($prediction);
+        }
+    }
+
+    private static function analyzeWithPythonService(array $payload): ?array
+    {
+        if (!function_exists('curl_init')) return null;
+
+        $ch = curl_init(self::SERVICE_URL);
+        curl_setopt_array($ch, [
+            CURLOPT_POST => true,
+            CURLOPT_HTTPHEADER => ['Content-Type: application/json'],
+            CURLOPT_POSTFIELDS => json_encode($payload, JSON_UNESCAPED_UNICODE),
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_CONNECTTIMEOUT_MS => self::CONNECT_TIMEOUT_MS,
+            CURLOPT_TIMEOUT_MS => self::TIMEOUT_MS,
+        ]);
+
+        $response = curl_exec($ch);
+        curl_close($ch);
+
+        if ($response === false) return null;
+        
+        $decoded = json_decode($response, true);
+        return is_array($decoded) ? $decoded : null;
+    }
+
+    private static function logAttackToDatabase(array $prediction, array $payload): void
+    {
+        try {
+            $db = Database::getInstance();
+            
+            $attackType = $prediction['attack_type'] ?? 'Unknown Attack';
+            $confidence = $prediction['confidence'] ?? 0;
+            $ipAddress = $_SERVER['REMOTE_ADDR'] ?? '::1';
+            $requestUrl = $_SERVER['REQUEST_URI'] ?? '';
+            $requestMethod = $_SERVER['REQUEST_METHOD'] ?? 'POST';
+            
+            // محاولة جلب اسم اليوزر المشبوه من حقول تسجيل الدخول المختلفة
+            $usernameAttempt = $payload['request_data']['post']['username'] ?? 
+                               $payload['request_data']['post']['username_or_email'] ?? NULL;
+            
+            $description = "AI Shield Blocked a " . $attackType . " attempt. Payload: " . json_encode($payload['request_data'], JSON_UNESCAPED_UNICODE);
+
+            $db->query(
+                "INSERT INTO security_logs (ip_address, user_id, username_attempt, attack_type, description, request_url, request_method, request_data, severity, action_taken, confidence, created_at)
+                 VALUES (?, NULL, ?, ?, ?, ?, ?, ?, 'critical', 'blocked', ?, NOW())",
+                [
+                    $ipAddress,
+                    $usernameAttempt,
+                    $attackType,
+                    $description,
+                    $requestUrl,
+                    $requestMethod,
+                    json_encode($payload['request_data'], JSON_UNESCAPED_UNICODE),
+                    $confidence
+                ]
+            );
+        } catch (Exception $e) {
+            error_log("WAF DB Logging Failed: " . $e->getMessage());
+        }
+    }
+
+    private static function blockRequest(array $prediction): void
+    {
+        if (ob_get_level()) ob_clean();
+        
+        http_response_code(403);
+        header('Content-Type: application/json; charset=utf-8');
+        
+        echo json_encode([
+            'error' => 'Security violation detected. Request blocked by AI WAF.',
+            'attack_type' => $prediction['attack_type'] ?? 'Unknown',
+            'confidence' => ($prediction['confidence'] ?? 0) . '%',
+            'shield' => 'AI-Powered Security Shield',
+            'timestamp' => date('Y-m-d H:i:s')
+        ], JSON_PRETTY_PRINT);
+        
+        exit;
+    }
 }
+
+// ✅ تشغيل الـ WAF فوراً قبل أي عملية معالجة أخرى لصد الهجمات في أول خط دفاع
+AIThreatDetectionMiddleware::handleGlobalRequest();
+
+// ========== START SESSION ==========
+if (session_status() === PHP_SESSION_NONE) session_start();
+
+require_once __DIR__ . '/db.php';
 
 // ========== CSRF PROTECTION ==========
 
@@ -25,7 +176,6 @@ function validateCSRFToken($token) {
     if (empty($token) || empty($_SESSION['csrf_token'])) {
         return false;
     }
-    // Token expires after 1 hour
     if (isset($_SESSION['csrf_token_time']) && (time() - $_SESSION['csrf_token_time'] > 3600)) {
         unset($_SESSION['csrf_token']);
         unset($_SESSION['csrf_token_time']);
@@ -42,301 +192,15 @@ function csrfField() {
 
 function sanitizeInput($input, $type = 'string') {
     if ($input === null) return null;
-
     switch ($type) {
-        case 'email':
-            return filter_var(trim($input), FILTER_SANITIZE_EMAIL);
-        case 'int':
-            return filter_var($input, FILTER_VALIDATE_INT);
-        case 'float':
-            return filter_var($input, FILTER_VALIDATE_FLOAT);
-        case 'url':
-            return filter_var(trim($input), FILTER_SANITIZE_URL);
-        case 'bool':
-            return filter_var($input, FILTER_VALIDATE_BOOLEAN);
-        default:
-            return htmlspecialchars(trim($input), ENT_QUOTES, 'UTF-8');
+        case 'email': return filter_var(trim($input), FILTER_SANITIZE_EMAIL);
+        case 'int': return filter_var($input, FILTER_VALIDATE_INT);
+        case 'float': return filter_var($input, FILTER_VALIDATE_FLOAT);
+        case 'url': return filter_var(trim($input), FILTER_SANITIZE_URL);
+        case 'bool': return filter_var($input, FILTER_VALIDATE_BOOLEAN);
+        default: return htmlspecialchars(trim($input), ENT_QUOTES, 'UTF-8');
     }
 }
-
-function validateRequired($fields, $data) {
-    $errors = [];
-    foreach ($fields as $field) {
-        if (empty($data[$field]) || trim($data[$field]) === '') {
-            $errors[] = "The field '$field' is required.";
-        }
-    }
-    return $errors;
-}
-
-// ========== SECURITY LOGGING HELPERS ==========
-// Kept active so your future AI model middleware can call them to log threats
-
-function logSecurityEvent($attackType, $description, $severity = 'medium', $actionTaken = 'blocked') {
-    try {
-        $requestPayload = [
-            'get' => $_GET ?? [],
-            'post' => $_POST ?? []
-        ];
-
-        $db = Database::getInstance();
-        $db->query(
-            "INSERT INTO security_logs (ip_address, user_id, username_attempt, attack_type, description, request_url, request_method, request_data, severity, action_taken, user_agent)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            [
-                $_SERVER['REMOTE_ADDR'] ?? 'unknown',
-                $_SESSION['user_id'] ?? null,
-                $_SESSION['username'] ?? ($_POST['username'] ?? null),
-                $attackType,
-                $description,
-                $_SERVER['REQUEST_URI'] ?? '',
-                $_SERVER['REQUEST_METHOD'] ?? 'GET',
-                json_encode($requestPayload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
-                $severity,
-                $actionTaken,
-                $_SERVER['HTTP_USER_AGENT'] ?? ''
-            ]
-        );
-    } catch (Exception $e) {
-        error_log("Failed to log security event: " . $e->getMessage());
-    }
-}
-
-// ========== AI THREAT DETECTION MIDDLEWARE ==========
-
-class AIThreatDetectionMiddleware {
-    private const DEFAULT_SERVICE_URL = 'http://127.0.0.1:5000/predict';
-    private const DEFAULT_CONNECT_TIMEOUT_MS = 100;
-    private const DEFAULT_TIMEOUT_MS = 500;
-    private const MAX_PAYLOAD_BYTES = 20000;
-    private const MAX_STRING_BYTES = 512;
-    private const MAX_ARRAY_ITEMS = 100;
-    private static bool $hasRun = false;
-
-    public static function handleGlobalRequest(): void {
-        if (self::$hasRun || PHP_SAPI === 'cli') {
-            return;
-        }
-        self::$hasRun = true;
-
-        $method = strtoupper($_SERVER['REQUEST_METHOD'] ?? 'GET');
-        if (!in_array($method, ['GET', 'POST'], true)) {
-            return;
-        }
-
-        $payload = self::buildInputVector($_GET ?? [], $_POST ?? []);
-        if (empty($payload['request_data']['get']) && empty($payload['request_data']['post'])) {
-            return;
-        }
-
-        $prediction = self::analyzeWithModel($payload);
-        if (!($prediction['is_attack'] ?? false)) {
-            return;
-        }
-
-        $severity = strtolower((string)($prediction['severity'] ?? 'medium'));
-        if ($severity !== 'critical') {
-            return;
-        }
-
-        $attackType = (string)($prediction['attack_type'] ?? 'ML Threat Detection');
-        $reason = (string)($prediction['reason'] ?? 'AI model flagged this request as critical.');
-        logSecurityEvent($attackType, $reason, 'critical', 'blocked');
-
-        self::blockRequest();
-    }
-
-    private static function buildInputVector(array $getData, array $postData): array {
-        $cleanGet = self::truncatePayload($getData);
-        $cleanPost = self::truncatePayload($postData);
-
-        return [
-            'request_method' => $_SERVER['REQUEST_METHOD'] ?? 'GET',
-            'request_uri' => $_SERVER['REQUEST_URI'] ?? '',
-            'ip_address' => $_SERVER['REMOTE_ADDR'] ?? 'unknown',
-            'user_agent' => $_SERVER['HTTP_USER_AGENT'] ?? '',
-            'request_data' => [
-                'get' => $cleanGet,
-                'post' => $cleanPost
-            ]
-        ];
-    }
-
-    private static function truncatePayload(array $input): array {
-        $encoded = json_encode($input, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-        if ($encoded === false) {
-            return [];
-        }
-        if (strlen($encoded) <= self::MAX_PAYLOAD_BYTES) {
-            return $input;
-        }
-
-        $limited = self::truncateValue($input, 0);
-        if (is_array($limited)) {
-            $limited['_truncated'] = true;
-            $limited['_original_size'] = strlen($encoded);
-            return $limited;
-        }
-
-        return ['_truncated' => true, '_original_size' => strlen($encoded)];
-    }
-
-    private static function truncateValue($value, int $depth) {
-        if ($depth >= 5) {
-            return '[max-depth]';
-        }
-
-        if (is_array($value)) {
-            $limitedArray = [];
-            $keys = array_slice(array_keys($value), 0, self::MAX_ARRAY_ITEMS);
-            $totalItems = count($value);
-
-            foreach ($keys as $key) {
-                $limitedArray[$key] = self::truncateValue($value[$key], $depth + 1);
-            }
-
-            if ($totalItems > self::MAX_ARRAY_ITEMS) {
-                $limitedArray['_items_truncated'] = true;
-                $limitedArray['_truncated_count'] = $totalItems - self::MAX_ARRAY_ITEMS;
-            }
-            return $limitedArray;
-        }
-
-        if (is_string($value)) {
-            if (strlen($value) > self::MAX_STRING_BYTES) {
-                return substr($value, 0, self::MAX_STRING_BYTES) . '...[truncated]';
-            }
-            return $value;
-        }
-
-        return $value;
-    }
-
-    private static function analyzeWithModel(array $payload): array {
-        $serviceResult = self::analyzeWithPythonService($payload);
-        if ($serviceResult !== null) {
-            return self::normalizePrediction($serviceResult);
-        }
-
-        $wrapperResult = self::analyzeWithPythonWrapper($payload);
-        if ($wrapperResult !== null) {
-            return self::normalizePrediction($wrapperResult);
-        }
-
-        if (filter_var(getenv('WAF_ML_FAIL_CLOSED') ?: '0', FILTER_VALIDATE_BOOLEAN)) {
-            return [
-                'is_attack' => true,
-                'severity' => 'critical',
-                'attack_type' => 'ML Service Unavailable',
-                'reason' => 'Threat detection service unavailable while fail-closed mode is enabled.'
-            ];
-        }
-
-        return ['is_attack' => false, 'severity' => 'low'];
-    }
-
-    private static function analyzeWithPythonService(array $payload): ?array {
-        $endpoint = getenv('WAF_ML_ENDPOINT') ?: self::DEFAULT_SERVICE_URL;
-        if (!function_exists('curl_init')) {
-            return null;
-        }
-        if (!self::isTrustedModelEndpoint($endpoint)) {
-            return null;
-        }
-
-        $body = json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-        if ($body === false) {
-            return null;
-        }
-
-        $ch = curl_init($endpoint);
-        curl_setopt_array($ch, [
-            CURLOPT_POST => true,
-            CURLOPT_HTTPHEADER => ['Content-Type: application/json'],
-            CURLOPT_POSTFIELDS => $body,
-            CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_CONNECTTIMEOUT_MS => self::readTimeoutFromEnv('WAF_ML_CONNECT_TIMEOUT_MS', self::DEFAULT_CONNECT_TIMEOUT_MS),
-            CURLOPT_TIMEOUT_MS => self::readTimeoutFromEnv('WAF_ML_TIMEOUT_MS', self::DEFAULT_TIMEOUT_MS)
-        ]);
-
-        $response = curl_exec($ch);
-        $statusCode = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
-        curl_close($ch);
-
-        if ($response === false || $statusCode < 200 || $statusCode >= 300) {
-            return null;
-        }
-
-        $decoded = json_decode($response, true);
-        return is_array($decoded) ? $decoded : null;
-    }
-
-    private static function analyzeWithPythonWrapper(array $payload): ?array {
-        // Optional safe skeleton for a local wrapper bridge.
-        // Implement with proc_open/IPC in deployment if HTTP microservice is unavailable.
-        return null;
-    }
-
-    private static function normalizePrediction(array $prediction): array {
-        $severity = strtolower((string)($prediction['severity'] ?? 'low'));
-        $allowedSeverity = ['low', 'medium', 'high', 'critical'];
-        if (!in_array($severity, $allowedSeverity, true)) {
-            $severity = 'low';
-        }
-
-        return [
-            'is_attack' => (bool)($prediction['is_attack'] ?? false),
-            'severity' => $severity,
-            'attack_type' => $prediction['attack_type'] ?? 'ML Threat Detection',
-            'reason' => $prediction['reason'] ?? 'AI threat detection event.'
-        ];
-    }
-
-    private static function isTrustedModelEndpoint(string $endpoint): bool {
-        $parts = parse_url($endpoint);
-        if ($parts === false || empty($parts['host'])) {
-            return false;
-        }
-
-        $host = strtolower((string)$parts['host']);
-        $scheme = strtolower((string)($parts['scheme'] ?? 'http'));
-        $trustedHostsRaw = getenv('WAF_ML_TRUSTED_HOSTS') ?: '127.0.0.1,localhost,::1';
-        $trustedHosts = array_filter(array_map('trim', explode(',', strtolower($trustedHostsRaw))));
-
-        if (!in_array($host, $trustedHosts, true)) {
-            return false;
-        }
-
-        if (in_array($host, ['127.0.0.1', 'localhost', '::1'], true)) {
-            return in_array($scheme, ['http', 'https'], true);
-        }
-
-        return $scheme === 'https';
-    }
-
-    private static function readTimeoutFromEnv(string $name, int $default): int {
-        $raw = getenv($name);
-        if ($raw === false || $raw === '') {
-            return $default;
-        }
-
-        $value = (int)$raw;
-        if ($value <= 0) {
-            return $default;
-        }
-
-        return $value;
-    }
-
-    private static function blockRequest(): void {
-        http_response_code(403);
-        header('Content-Type: application/json; charset=utf-8');
-        echo json_encode(['error' => 'Security violation detected. Request blocked.']);
-        exit;
-    }
-}
-
-AIThreatDetectionMiddleware::handleGlobalRequest();
 
 // ========== AUTHENTICATION HELPERS ==========
 
@@ -346,7 +210,6 @@ function isLoggedIn() {
 
 function getCurrentUser() {
     if (!isLoggedIn()) return null;
-
     try {
         $db = Database::getInstance();
         $result = $db->query(
@@ -382,17 +245,28 @@ function requireRole($allowedRoles) {
 }
 
 function redirectByRole() {
-    if (!isLoggedIn()) {
+    $user = getCurrentUser();
+    if (!$user) {
         header('Location: /login.php');
         exit;
     }
-    $user = getCurrentUser();
+
     switch ($user['role_name']) {
-        case 'admin': header('Location: /admin/dashboard.php'); break;
-        case 'doctor': header('Location: /doctor/dashboard.php'); break;
-        case 'ta': header('Location: /ta/dashboard.php'); break;
-        case 'student': header('Location: /student/dashboard.php'); break;
-        default: header('Location: /login.php'); break;
+        case 'admin':
+            header('Location: /admin/dashboard.php');
+            break;
+        case 'doctor':
+            header('Location: /doctor/dashboard.php');
+            break;
+        case 'ta':
+            header('Location: /ta/dashboard.php');
+            break;
+        case 'student':
+            header('Location: /student/dashboard.php');
+            break;
+        default:
+            header('Location: /index.php');
+            break;
     }
     exit;
 }
@@ -441,7 +315,6 @@ function paginate($page, $perPage, $total) {
     $totalPages = max(1, ceil($total / $perPage));
     $page = min($page, $totalPages);
     $offset = ($page - 1) * $perPage;
-
     return [
         'page' => $page,
         'per_page' => $perPage,
@@ -457,7 +330,6 @@ function timeAgo($datetime) {
     $time = strtotime($datetime);
     $now = time();
     $diff = $now - $time;
-
     if ($diff < 60) return 'Just now';
     if ($diff < 3600) return floor($diff / 60) . ' min ago';
     if ($diff < 86400) return floor($diff / 3600) . ' hours ago';
@@ -469,63 +341,42 @@ function formatDate($datetime, $format = 'M j, Y g:i A') {
     return date($format, strtotime($datetime));
 }
 
-function getDeadlineStatus($deadline) {
-    $deadlineTime = strtotime($deadline);
-    $now = time();
-    $diff = $deadlineTime - $now;
-
-    if ($diff < 0) return ['class' => 'overdue', 'text' => 'Overdue', 'urgent' => true];
-    if ($diff < 86400) return ['class' => 'urgent', 'text' => floor($diff / 3600) . ' hours left', 'urgent' => true];
-    if ($diff < 172800) return ['class' => 'soon', 'text' => '1 day left', 'urgent' => false];
-    return ['class' => 'normal', 'text' => floor($diff / 86400) . ' days left', 'urgent' => false];
-}
-
 // ========== FILE UPLOAD HELPERS ==========
 
 function uploadFile($file, $directory, $allowedTypes = ['pdf', 'zip', 'doc', 'docx'], $maxSize = 10485760) {
     $result = ['success' => false, 'path' => '', 'filename' => '', 'error' => ''];
-
     if (!isset($file['tmp_name']) || empty($file['tmp_name'])) {
         $result['error'] = 'No file uploaded.';
         return $result;
     }
-
     if ($file['size'] > $maxSize) {
         $result['error'] = 'File size exceeds the maximum limit of ' . ($maxSize / 1048576) . ' MB.';
         return $result;
     }
-
     $ext = strtolower(pathinfo($file['name'], PATHINFO_EXTENSION));
     if (!in_array($ext, $allowedTypes)) {
         $result['error'] = 'Invalid file type. Allowed: ' . implode(', ', $allowedTypes);
         return $result;
     }
-
-    // Validate MIME type
     $finfo = finfo_open(FILEINFO_MIME_TYPE);
     $mimeType = finfo_file($finfo, $file['tmp_name']);
     finfo_close($finfo);
-
     $validMimes = [
         'pdf' => ['application/pdf'],
         'zip' => ['application/zip', 'application/x-zip-compressed'],
         'doc' => ['application/msword'],
         'docx' => ['application/vnd.openxmlformats-officedocument.wordprocessingml.document']
     ];
-
     if (isset($validMimes[$ext]) && !in_array($mimeType, $validMimes[$ext])) {
         $result['error'] = 'Invalid file content.';
         return $result;
     }
-
     $uploadDir = __DIR__ . '/../uploads/' . $directory . '/';
     if (!is_dir($uploadDir)) {
         mkdir($uploadDir, 0755, true);
     }
-
     $filename = uniqid() . '_' . preg_replace('/[^a-zA-Z0-9._-]/', '_', $file['name']);
     $filepath = $uploadDir . $filename;
-
     if (move_uploaded_file($file['tmp_name'], $filepath)) {
         $result['success'] = true;
         $result['path'] = 'uploads/' . $directory . '/' . $filename;
@@ -535,7 +386,6 @@ function uploadFile($file, $directory, $allowedTypes = ['pdf', 'zip', 'doc', 'do
     } else {
         $result['error'] = 'Failed to move uploaded file.';
     }
-
     return $result;
 }
 
