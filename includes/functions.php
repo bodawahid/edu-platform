@@ -74,6 +74,11 @@ function validateRequired($fields, $data) {
 
 function logSecurityEvent($attackType, $description, $severity = 'medium', $actionTaken = 'blocked') {
     try {
+        $requestPayload = [
+            'get' => $_GET ?? [],
+            'post' => $_POST ?? []
+        ];
+
         $db = Database::getInstance();
         $db->query(
             "INSERT INTO security_logs (ip_address, user_id, username_attempt, attack_type, description, request_url, request_method, request_data, severity, action_taken, user_agent)
@@ -86,7 +91,7 @@ function logSecurityEvent($attackType, $description, $severity = 'medium', $acti
                 $description,
                 $_SERVER['REQUEST_URI'] ?? '',
                 $_SERVER['REQUEST_METHOD'] ?? 'GET',
-                json_encode($_POST),
+                json_encode($requestPayload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
                 $severity,
                 $actionTaken,
                 $_SERVER['HTTP_USER_AGENT'] ?? ''
@@ -96,6 +101,166 @@ function logSecurityEvent($attackType, $description, $severity = 'medium', $acti
         error_log("Failed to log security event: " . $e->getMessage());
     }
 }
+
+// ========== AI THREAT DETECTION MIDDLEWARE ==========
+
+class AIThreatDetectionMiddleware {
+    private const DEFAULT_SERVICE_URL = 'http://127.0.0.1:5000/predict';
+    private const DEFAULT_TIMEOUT_SECONDS = 2;
+    private static bool $hasRun = false;
+
+    public static function handleGlobalRequest(): void {
+        if (self::$hasRun || PHP_SAPI === 'cli') {
+            return;
+        }
+        self::$hasRun = true;
+
+        $method = strtoupper($_SERVER['REQUEST_METHOD'] ?? 'GET');
+        if (!in_array($method, ['GET', 'POST'], true)) {
+            return;
+        }
+
+        $payload = self::buildInputVector($_GET ?? [], $_POST ?? []);
+        if (empty($payload['request_data']['get']) && empty($payload['request_data']['post'])) {
+            return;
+        }
+
+        $prediction = self::analyzeWithModel($payload);
+        if (!($prediction['is_attack'] ?? false)) {
+            return;
+        }
+
+        $severity = strtolower((string)($prediction['severity'] ?? 'medium'));
+        if ($severity !== 'critical') {
+            return;
+        }
+
+        $attackType = (string)($prediction['attack_type'] ?? 'ML Threat Detection');
+        $reason = (string)($prediction['reason'] ?? 'AI model flagged this request as critical.');
+        logSecurityEvent($attackType, $reason, 'critical', 'blocked');
+
+        self::blockRequest();
+    }
+
+    private static function buildInputVector(array $getData, array $postData): array {
+        $cleanGet = self::truncatePayload($getData);
+        $cleanPost = self::truncatePayload($postData);
+
+        return [
+            'request_method' => $_SERVER['REQUEST_METHOD'] ?? 'GET',
+            'request_uri' => $_SERVER['REQUEST_URI'] ?? '',
+            'ip_address' => $_SERVER['REMOTE_ADDR'] ?? 'unknown',
+            'user_agent' => $_SERVER['HTTP_USER_AGENT'] ?? '',
+            'request_data' => [
+                'get' => $cleanGet,
+                'post' => $cleanPost
+            ]
+        ];
+    }
+
+    private static function truncatePayload(array $input): array {
+        $encoded = json_encode($input, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        if ($encoded === false) {
+            return [];
+        }
+        if (strlen($encoded) > 20000) {
+            return ['_truncated' => true, '_size' => strlen($encoded)];
+        }
+        return $input;
+    }
+
+    private static function analyzeWithModel(array $payload): array {
+        $serviceResult = self::analyzeWithPythonService($payload);
+        if ($serviceResult !== null) {
+            return self::normalizePrediction($serviceResult);
+        }
+
+        $wrapperResult = self::analyzeWithPythonWrapper($payload);
+        if ($wrapperResult !== null) {
+            return self::normalizePrediction($wrapperResult);
+        }
+
+        return ['is_attack' => false, 'severity' => 'low'];
+    }
+
+    private static function analyzeWithPythonService(array $payload): ?array {
+        $endpoint = getenv('WAF_ML_ENDPOINT') ?: self::DEFAULT_SERVICE_URL;
+        if (!function_exists('curl_init')) {
+            return null;
+        }
+
+        $body = json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        if ($body === false) {
+            return null;
+        }
+
+        $ch = curl_init($endpoint);
+        curl_setopt_array($ch, [
+            CURLOPT_POST => true,
+            CURLOPT_HTTPHEADER => ['Content-Type: application/json'],
+            CURLOPT_POSTFIELDS => $body,
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_CONNECTTIMEOUT => self::DEFAULT_TIMEOUT_SECONDS,
+            CURLOPT_TIMEOUT => self::DEFAULT_TIMEOUT_SECONDS
+        ]);
+
+        $response = curl_exec($ch);
+        $statusCode = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        curl_close($ch);
+
+        if ($response === false || $statusCode < 200 || $statusCode >= 300) {
+            return null;
+        }
+
+        $decoded = json_decode($response, true);
+        return is_array($decoded) ? $decoded : null;
+    }
+
+    private static function analyzeWithPythonWrapper(array $payload): ?array {
+        $bridgeScript = __DIR__ . '/ml_waf_bridge.py';
+        if (!is_file($bridgeScript)) {
+            return null;
+        }
+
+        $payloadJson = json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        if ($payloadJson === false) {
+            return null;
+        }
+
+        $command = 'python3 ' . escapeshellarg($bridgeScript) . ' ' . escapeshellarg($payloadJson) . ' 2>/dev/null';
+        $output = shell_exec($command);
+        if (!is_string($output) || trim($output) === '') {
+            return null;
+        }
+
+        $decoded = json_decode($output, true);
+        return is_array($decoded) ? $decoded : null;
+    }
+
+    private static function normalizePrediction(array $prediction): array {
+        $severity = strtolower((string)($prediction['severity'] ?? 'low'));
+        $allowedSeverity = ['low', 'medium', 'high', 'critical'];
+        if (!in_array($severity, $allowedSeverity, true)) {
+            $severity = 'low';
+        }
+
+        return [
+            'is_attack' => (bool)($prediction['is_attack'] ?? false),
+            'severity' => $severity,
+            'attack_type' => $prediction['attack_type'] ?? 'ML Threat Detection',
+            'reason' => $prediction['reason'] ?? 'AI threat detection event.'
+        ];
+    }
+
+    private static function blockRequest(): void {
+        http_response_code(403);
+        header('Content-Type: application/json; charset=utf-8');
+        echo json_encode(['error' => 'Security violation detected. Request blocked.']);
+        exit;
+    }
+}
+
+AIThreatDetectionMiddleware::handleGlobalRequest();
 
 // ========== AUTHENTICATION HELPERS ==========
 
