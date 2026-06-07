@@ -106,7 +106,8 @@ function logSecurityEvent($attackType, $description, $severity = 'medium', $acti
 
 class AIThreatDetectionMiddleware {
     private const DEFAULT_SERVICE_URL = 'http://127.0.0.1:5000/predict';
-    private const DEFAULT_TIMEOUT_SECONDS = 2;
+    private const DEFAULT_TIMEOUT_MS = 500;
+    private const MAX_PAYLOAD_BYTES = 20000;
     private static bool $hasRun = false;
 
     public static function handleGlobalRequest(): void {
@@ -121,10 +122,6 @@ class AIThreatDetectionMiddleware {
         }
 
         $payload = self::buildInputVector($_GET ?? [], $_POST ?? []);
-        if (empty($payload['request_data']['get']) && empty($payload['request_data']['post'])) {
-            return;
-        }
-
         $prediction = self::analyzeWithModel($payload);
         if (!($prediction['is_attack'] ?? false)) {
             return;
@@ -163,7 +160,7 @@ class AIThreatDetectionMiddleware {
         if ($encoded === false) {
             return [];
         }
-        if (strlen($encoded) > 20000) {
+        if (strlen($encoded) > self::MAX_PAYLOAD_BYTES) {
             return ['_truncated' => true, '_size' => strlen($encoded)];
         }
         return $input;
@@ -188,6 +185,9 @@ class AIThreatDetectionMiddleware {
         if (!function_exists('curl_init')) {
             return null;
         }
+        if (!self::isTrustedModelEndpoint($endpoint)) {
+            return null;
+        }
 
         $body = json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
         if ($body === false) {
@@ -200,8 +200,8 @@ class AIThreatDetectionMiddleware {
             CURLOPT_HTTPHEADER => ['Content-Type: application/json'],
             CURLOPT_POSTFIELDS => $body,
             CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_CONNECTTIMEOUT => self::DEFAULT_TIMEOUT_SECONDS,
-            CURLOPT_TIMEOUT => self::DEFAULT_TIMEOUT_SECONDS
+            CURLOPT_CONNECTTIMEOUT_MS => self::DEFAULT_TIMEOUT_MS,
+            CURLOPT_TIMEOUT_MS => self::DEFAULT_TIMEOUT_MS
         ]);
 
         $response = curl_exec($ch);
@@ -217,24 +217,9 @@ class AIThreatDetectionMiddleware {
     }
 
     private static function analyzeWithPythonWrapper(array $payload): ?array {
-        $bridgeScript = __DIR__ . '/ml_waf_bridge.py';
-        if (!is_file($bridgeScript)) {
-            return null;
-        }
-
-        $payloadJson = json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-        if ($payloadJson === false) {
-            return null;
-        }
-
-        $command = 'python3 ' . escapeshellarg($bridgeScript) . ' ' . escapeshellarg($payloadJson) . ' 2>/dev/null';
-        $output = shell_exec($command);
-        if (!is_string($output) || trim($output) === '') {
-            return null;
-        }
-
-        $decoded = json_decode($output, true);
-        return is_array($decoded) ? $decoded : null;
+        // Optional safe skeleton for a local wrapper bridge.
+        // Implement with proc_open/IPC in deployment if HTTP microservice is unavailable.
+        return null;
     }
 
     private static function normalizePrediction(array $prediction): array {
@@ -250,6 +235,23 @@ class AIThreatDetectionMiddleware {
             'attack_type' => $prediction['attack_type'] ?? 'ML Threat Detection',
             'reason' => $prediction['reason'] ?? 'AI threat detection event.'
         ];
+    }
+
+    private static function isTrustedModelEndpoint(string $endpoint): bool {
+        $parts = parse_url($endpoint);
+        if ($parts === false || empty($parts['host'])) {
+            return false;
+        }
+
+        $host = strtolower((string)$parts['host']);
+        $scheme = strtolower((string)($parts['scheme'] ?? 'http'));
+        $isLocalhost = in_array($host, ['127.0.0.1', 'localhost', '::1'], true);
+
+        if ($isLocalhost) {
+            return true;
+        }
+
+        return $scheme === 'https';
     }
 
     private static function blockRequest(): void {
