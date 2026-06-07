@@ -106,7 +106,7 @@ function logSecurityEvent($attackType, $description, $severity = 'medium', $acti
 
 class AIThreatDetectionMiddleware {
     private const DEFAULT_SERVICE_URL = 'http://127.0.0.1:5000/predict';
-    private const DEFAULT_TIMEOUT_MS = 500;
+    private const DEFAULT_TIMEOUT_MS = 250;
     private const MAX_PAYLOAD_BYTES = 20000;
     private static bool $hasRun = false;
 
@@ -160,10 +160,47 @@ class AIThreatDetectionMiddleware {
         if ($encoded === false) {
             return [];
         }
-        if (strlen($encoded) > self::MAX_PAYLOAD_BYTES) {
-            return ['_truncated' => true, '_size' => strlen($encoded)];
+        if (strlen($encoded) <= self::MAX_PAYLOAD_BYTES) {
+            return $input;
         }
-        return $input;
+
+        $limited = self::truncateValue($input, 0);
+        if (is_array($limited)) {
+            $limited['_truncated'] = true;
+            $limited['_original_size'] = strlen($encoded);
+            return $limited;
+        }
+
+        return ['_truncated' => true, '_original_size' => strlen($encoded)];
+    }
+
+    private static function truncateValue($value, int $depth) {
+        if ($depth >= 5) {
+            return '[max-depth]';
+        }
+
+        if (is_array($value)) {
+            $limitedArray = [];
+            $count = 0;
+            foreach ($value as $key => $item) {
+                if ($count >= 100) {
+                    $limitedArray['_items_truncated'] = true;
+                    break;
+                }
+                $limitedArray[$key] = self::truncateValue($item, $depth + 1);
+                $count++;
+            }
+            return $limitedArray;
+        }
+
+        if (is_string($value)) {
+            if (strlen($value) > 512) {
+                return substr($value, 0, 512) . '...[truncated]';
+            }
+            return $value;
+        }
+
+        return $value;
     }
 
     private static function analyzeWithModel(array $payload): array {
@@ -175,6 +212,15 @@ class AIThreatDetectionMiddleware {
         $wrapperResult = self::analyzeWithPythonWrapper($payload);
         if ($wrapperResult !== null) {
             return self::normalizePrediction($wrapperResult);
+        }
+
+        if (filter_var(getenv('WAF_ML_FAIL_CLOSED') ?: '0', FILTER_VALIDATE_BOOLEAN)) {
+            return [
+                'is_attack' => true,
+                'severity' => 'critical',
+                'attack_type' => 'ML Service Unavailable',
+                'reason' => 'Threat detection service unavailable while fail-closed mode is enabled.'
+            ];
         }
 
         return ['is_attack' => false, 'severity' => 'low'];
