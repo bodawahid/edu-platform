@@ -82,6 +82,7 @@ $quizResults = $db->query(
 )->fetchAll();
 
 // Fetch assignment grades
+// Fetch assignment grades
 $assignmentGrades = $db->query(
     "SELECT asub.*, a.title as assignment_title, a.max_marks, c.course_code,
      grader.full_name as graded_by_name
@@ -93,6 +94,14 @@ $assignmentGrades = $db->query(
      ORDER BY asub.submitted_at DESC",
     [$user['id']]
 )->fetchAll();
+
+// Fetch assignment files (doctor's uploaded instructions)
+$assignmentFiles = [];
+
+// Course-wise gradebook data
+$courseGradebook = [];
+
+// Stats
 
 // Stats
 $stats = [
@@ -378,7 +387,7 @@ if ($section === 'take_quiz' && isset($_GET['id'])) {
                 </div>
 
                 <div class="card" style="margin-bottom: 20px;">
-                    <div class="card-header"><span class="card-title">Upcoming Quizzes</span></div>
+                    <div class="card-header"><span class="card-title">&#128221; Upcoming Quizzes</span></div>
                     <div class="card-body" style="padding: 0;">
                         <div class="table-container">
                             <table class="data-table">
@@ -388,32 +397,39 @@ if ($section === 'take_quiz' && isset($_GET['id'])) {
                                 <tbody>
                                     <?php foreach ($upcomingQuizzes as $q):
                                         $deadline = getDeadlineStatus($q['end_time']);
+                                        $hoursLeft = max(0, round((strtotime($q['end_time']) - time()) / 3600, 1));
+                                        $isUrgent = $hoursLeft <= 24 && $hoursLeft > 0;
                                     ?>
-                                    <tr>
-                                        <td>open<strong><?= htmlspecialchars($q['title']) ?></strong></td>
+                                    <tr style="<?= $isUrgent ? 'background: #fff3e0;' : '' ?>">
+                                        <td>
+                                            <strong><?= htmlspecialchars($q['title']) ?></strong>
+                                            <?php if ($isUrgent): ?>
+                                            <span class="badge badge-danger" style="margin-left: 6px;">&#9888; <?= round($hoursLeft) ?>h left</span>
+                                            <?php endif; ?>
+                                        </td>
                                         <td><?= htmlspecialchars($q['course_code']) ?></td>
                                         <td><?= $q['duration_minutes'] ?> min</td>
                                         <td><span class="deadline-badge deadline-<?= $deadline['class'] ?>"><?= $deadline['text'] ?></span></td>
                                         <td>
                                             <?php if ($q['has_attempted']): ?>
-                                            <span class="badge badge-success">Completed</span>
+                                            <span class="badge badge-success">&#10003; Completed</span>
                                             <?php else: ?>
-                                            <span class="badge badge-warning">Pending</span>
+                                            <span class="badge badge-warning">&#9203; Pending</span>
                                             <?php endif; ?>
                                         </td>
                                         <td>
                                             <?php if (!$q['has_attempted'] && strtotime($q['start_time']) <= time()): ?>
-                                            <a href="?section=take_quiz&id=<?= $q['id'] ?>" class="btn btn-sm btn-primary">Take Quiz</a>
+                                            <a href="?section=take_quiz&id=<?= $q['id'] ?>" class="btn btn-sm btn-primary <?= $isUrgent ? 'btn-danger' : '' ?>">Take Quiz</a>
                                             <?php elseif ($q['has_attempted']): ?>
-                                            <span style="color: var(--gray); font-size: 0.85rem;">Taken</span>
+                                            <span style="color: var(--gray); font-size: 0.85rem;">&#10003; Taken</span>
                                             <?php else: ?>
-                                            <span style="color: var(--gray); font-size: 0.85rem;">Not started</span>
+                                            <span style="color: var(--gray); font-size: 0.85rem;">&#9200; Not started</span>
                                             <?php endif; ?>
                                         </td>
                                     </tr>
                                     <?php endforeach; ?>
                                     <?php if (empty($upcomingQuizzes)): ?>
-                                    <tr><td colspan="6" style="text-align:center;color:var(--gray);padding:30px;">No upcoming quizzes!</td></tr>
+                                    <tr><td colspan="6" style="text-align:center;color:var(--gray);padding:30px;">&#127881; No upcoming quizzes! Enjoy your free time.</td></tr>
                                     <?php endif; ?>
                                 </tbody>
                             </table>
@@ -422,33 +438,60 @@ if ($section === 'take_quiz' && isset($_GET['id'])) {
                 </div>
 
                 <div class="card">
-                    <div class="card-header"><span class="card-title">Assignments</span></div>
+                    <div class="card-header"><span class="card-title">&#128193; Assignments</span></div>
                     <div class="card-body" style="padding: 0;">
                         <div class="table-container">
                             <table class="data-table">
                                 <thead>
-                                    <tr><th>Assignment</th><th>Course</th><th>Deadline</th><th>Status</th><th>Action</th></tr>
+                                    <tr><th>Assignment</th><th>Course</th><th>Deadline</th><th>Time Left</th><th>Status</th><th>Action</th></tr>
                                 </thead>
                                 <tbody>
                                     <?php foreach ($pendingAssignments as $a):
                                         $deadline = getDeadlineStatus($a['deadline']);
+                                        $hoursLeft = max(0, round((strtotime($a['deadline']) - time()) / 3600, 1));
+                                        $isUrgent = $hoursLeft <= 24 && $hoursLeft > 0;
+                                        $isExpired = $hoursLeft <= 0 && !($a['late_submission_allowed'] ?? 0);
                                     ?>
-                                    <tr>
-                                        <td><strong><?= htmlspecialchars($a['title']) ?></strong></td>
+                                    <tr style="<?= $isUrgent ? 'background: #fff3e0;' : ($isExpired ? 'background: #ffebee;' : '') ?>">
+                                        <td>
+                                            <strong><?= htmlspecialchars($a['title']) ?></strong>
+                                            <?php if ($isUrgent && !$a['has_submitted']): ?>
+                                            <span class="badge badge-danger" style="margin-left: 6px;">&#9888; Due Soon!</span>
+                                            <?php endif; ?>
+                                        </td>
                                         <td><?= htmlspecialchars($a['course_code']) ?></td>
                                         <td><span class="deadline-badge deadline-<?= $deadline['class'] ?>"><?= $deadline['text'] ?></span></td>
-                                        <td><?= $a['has_submitted'] ? '<span class="badge badge-success">Submitted</span>' : '<span class="badge badge-warning">Pending</span>' ?></td>
                                         <td>
-                                            <?php if (!$a['has_submitted']): ?>
-                                            <a href="?section=assignments&id=<?= $a['id'] ?>" class="btn btn-sm btn-primary">Submit</a>
+                                            <?php if ($isExpired): ?>
+                                                <span style="color: var(--danger); font-weight: 600;">&#10060; Expired</span>
+                                            <?php elseif ($hoursLeft <= 24): ?>
+                                                <span style="color: var(--danger); font-weight: 600;">&#9200; <?= round($hoursLeft) ?> hours</span>
                                             <?php else: ?>
-                                            <span style="color: var(--gray); font-size: 0.85rem;">Done</span>
+                                                <span style="color: var(--gray);">&#128197; <?= round($hoursLeft / 24, 1) ?> days</span>
+                                            <?php endif; ?>
+                                        </td>
+                                        <td>
+                                            <?php if ($a['has_submitted']): ?>
+                                            <span class="badge badge-success">&#10003; Submitted</span>
+                                            <?php elseif ($isExpired): ?>
+                                            <span class="badge badge-danger">&#128683; Missed</span>
+                                            <?php else: ?>
+                                            <span class="badge badge-warning">&#9203; Pending</span>
+                                            <?php endif; ?>
+                                        </td>
+                                        <td>
+                                            <?php if (!$a['has_submitted'] && !$isExpired): ?>
+                                            <a href="?section=assignments&id=<?= $a['id'] ?>" class="btn btn-sm btn-primary <?= $isUrgent ? 'btn-danger' : '' ?>">Submit Now</a>
+                                            <?php elseif ($a['has_submitted']): ?>
+                                            <a href="?section=assignments&id=<?= $a['id'] ?>" class="btn btn-sm btn-outline">&#128260; Resubmit</a>
+                                            <?php else: ?>
+                                            <span style="color: var(--gray); font-size: 0.85rem;">&#128274; Closed</span>
                                             <?php endif; ?>
                                         </td>
                                     </tr>
                                     <?php endforeach; ?>
                                     <?php if (empty($pendingAssignments)): ?>
-                                    <tr><td colspan="5" style="text-align:center;color:var(--gray);padding:30px;">No pending assignments!</td></tr>
+                                    <tr><td colspan="6" style="text-align:center;color:var(--gray);padding:30px;">&#127881; All assignments submitted! Great job!</td></tr>
                                     <?php endif; ?>
                                 </tbody>
                             </table>
@@ -603,79 +646,239 @@ if ($section === 'take_quiz' && isset($_GET['id'])) {
                         [$assignmentId]
                     )->fetch();
 
+                    if (!$assignment):
+                ?>
+                <div class="page-header">
+                    <h1 class="page-title">Assignment Not Found</h1>
+                    <a href="?section=todo" class="btn btn-outline btn-sm" style="margin-top: 12px;">&#8592; Back</a>
+                </div>
+                <div class="card">
+                    <div class="card-body" style="text-align: center; padding: 60px;">
+                        <div style="font-size: 4rem; margin-bottom: 16px;">&#128683;</div>
+                        <h3 style="color: var(--danger);">Assignment Not Available</h3>
+                        <p style="color: var(--gray);">This assignment may not exist, is not published yet, or you don't have access.</p>
+                    </div>
+                </div>
+                <?php else:
+                    // Check deadline status
+                    $deadlineTimestamp = strtotime($assignment['deadline']);
+                    $now = time();
+                    $diff = $deadlineTimestamp - $now;
+                    $isExpired = $diff <= 0;
+                    $isNearDeadline = $diff > 0 && $diff <= 86400; // Within 24 hours
+                    $canSubmit = !$isExpired || ($assignment['late_submission_allowed'] ?? 0);
+                    
                     $existingSub = $db->query(
                         "SELECT * FROM assignment_submissions WHERE assignment_id = ? AND student_id = ?",
                         [$assignmentId, $user['id']]
                     )->fetch();
+                    
+                    // Fetch doctor's uploaded files
+                    $assignmentFiles = $db->query(
+                        "SELECT * FROM assignment_files WHERE assignment_id = ? ORDER BY uploaded_at DESC",
+                        [$assignmentId]
+                    )->fetchAll();
                 ?>
                 <div class="page-header">
                     <h1 class="page-title">Submit Assignment</h1>
-                    <p class="page-subtitle"><?= htmlspecialchars($assignment['title'] ?? '') ?></p>
-                    <a href="?section=todo" class="btn btn-outline btn-sm" style="margin-top: 12px;">&#8592; Back</a>
+                    <p class="page-subtitle"><?= htmlspecialchars($assignment['title']) ?></p>
+                    <a href="?section=todo" class="btn btn-outline btn-sm" style="margin-top: 12px;">&#8592; Back to To-Do</a>
                 </div>
+
+                <?php if ($isNearDeadline && !$isExpired): ?>
+                <div class="alert alert-warning" style="margin-bottom: 20px;">
+                    <span class="alert-icon">&#9888;</span>
+                    <strong>Deadline Approaching!</strong> Less than 24 hours remaining. Submit now to avoid late penalties.
+                </div>
+                <?php endif; ?>
+
+                <?php if ($isExpired && !($assignment['late_submission_allowed'] ?? 0)): ?>
+                <div class="alert alert-error" style="margin-bottom: 20px;">
+                    <span class="alert-icon">&#10060;</span>
+                    <strong>Deadline Passed!</strong> This assignment is no longer accepting submissions.
+                </div>
+                <?php endif; ?>
 
                 <div style="display: grid; grid-template-columns: 1fr 2fr; gap: 20px;">
                     <div class="card">
                         <div class="card-header"><span class="card-title">Assignment Details</span></div>
                         <div class="card-body">
                             <p><strong>Course:</strong> <?= htmlspecialchars($assignment['course_code'] ?? '') ?></p>
-                            <p><strong>Deadline:</strong> <?= formatDate($assignment['deadline'] ?? '') ?></p>
+                            <p><strong>Deadline:</strong> 
+                                <?php 
+                                $deadlineStatus = getDeadlineStatus($assignment['deadline']);
+                                ?>
+                                <span class="deadline-badge deadline-<?= $deadlineStatus['class'] ?>"><?= $deadlineStatus['text'] ?></span>
+                            </p>
                             <p><strong>Max Marks:</strong> <?= $assignment['max_marks'] ?? '' ?></p>
                             <p><strong>File Types:</strong> <?= htmlspecialchars($assignment['allowed_file_types'] ?? '') ?></p>
-                            <p><strong>Max Size:</strong> <?= $assignment['max_file_size_mb'] ?? '' ?> MB</p>
+                            <p><strong>Max Size:</strong> <?= $assignment['max_file_size_mb'] ?? 10 ?> MB</p>
+                            
+                            <?php if (!empty($assignment['instructions'])): ?>
+                            <div style="margin-top: 16px; padding: 12px; background: #f8f9fa; border-radius: 8px; border-left: 4px solid var(--primary);">
+                                <strong style="color: var(--primary);">Instructions:</strong><br>
+                                <span style="font-size: 0.9rem; color: var(--dark);"><?= nl2br(htmlspecialchars($assignment['instructions'])) ?></span>
+                            </div>
+                            <?php endif; ?>
+                            
+                            <?php if (!empty($assignmentFiles)): ?>
+                            <div style="margin-top: 16px;">
+                                <strong style="color: var(--primary);">&#128196; Attached Files:</strong>
+                                <div style="margin-top: 8px; display: flex; flex-direction: column; gap: 6px;">
+                                    <?php foreach ($assignmentFiles as $file): ?>
+                                    <a href="/<?= htmlspecialchars($file['file_path']) ?>" target="_blank" class="btn btn-sm btn-outline" style="justify-content: flex-start; text-align: left;">
+                                        &#128190; <?= htmlspecialchars($file['file_name']) ?> 
+                                        <span style="color: var(--gray); font-size: 0.75rem; margin-left: auto;"><?= round($file['file_size'] / 1024, 1) ?> KB</span>
+                                    </a>
+                                    <?php endforeach; ?>
+                                </div>
+                            </div>
+                            <?php endif; ?>
+                            
                             <?php if ($existingSub): ?>
-                            <div class="alert alert-info" style="margin-top: 12px;">
-                                <span class="alert-icon">ℹ</span> You submitted this on <?= formatDate($existingSub['submitted_at']) ?>
+                            <div class="alert alert-info" style="margin-top: 16px;">
+                                <span class="alert-icon">&#9432;</span> 
+                                Submitted on <?= formatDate($existingSub['submitted_at']) ?>
+                                <?php if ($existingSub['is_late']): ?>
+                                <span class="badge badge-warning">Late</span>
+                                <?php endif; ?>
                             </div>
                             <?php endif; ?>
                         </div>
                     </div>
 
                     <div class="card">
-                        <div class="card-header"><span class="card-title"><?= $existingSub ? 'Resubmit' : 'Submit' ?> Assignment</span></div>
+                        <div class="card-header">
+                            <span class="card-title">
+                                <?php if ($existingSub): ?>
+                                    &#128260; Resubmit Assignment
+                                <?php else: ?>
+                                    &#128228; Submit Assignment
+                                <?php endif; ?>
+                            </span>
+                        </div>
                         <div class="card-body">
+                            <?php if (!$canSubmit): ?>
+                            <div style="text-align: center; padding: 40px;">
+                                <div style="font-size: 3rem; margin-bottom: 12px;">&#9200;</div>
+                                <h3 style="color: var(--danger);">Submission Closed</h3>
+                                <p style="color: var(--gray);">The deadline has passed and late submissions are not allowed.</p>
+                            </div>
+                            <?php else: ?>
                             <form id="submitAssignmentForm" enctype="multipart/form-data">
                                 <?= csrfField() ?>
                                 <input type="hidden" name="assignment_id" value="<?= $assignmentId ?>">
 
-                                <?php if (!empty($assignment['instructions'])): ?>
-                                <div class="alert alert-info" style="margin-bottom: 16px;">
-                                    <strong>Instructions:</strong> <?= nl2br(htmlspecialchars($assignment['instructions'])) ?>
+                                <div class="form-group">
+                                    <label class="form-label">Submission Text (optional)</label>
+                                    <textarea name="submission_text" class="form-control" rows="6" placeholder="Enter your answer or notes here..."><?= $existingSub ? htmlspecialchars($existingSub['submission_text'] ?? '') : '' ?></textarea>
+                                </div>
+
+                                <?php if ($existingSub && $existingSub['file_path']): ?>
+                                <div class="form-group">
+                                    <label class="form-label">Current Submission File</label>
+                                    <div style="display: flex; align-items: center; gap: 10px; padding: 12px; background: #e8f5e9; border-radius: 8px; border: 1px solid #a5d6a7;">
+                                        <span style="font-size: 1.5rem;">&#128196;</span>
+                                        <div style="flex: 1;">
+                                            <div style="font-weight: 500;"><?= htmlspecialchars($existingSub['file_name']) ?></div>
+                                            <div style="font-size: 0.8rem; color: var(--gray);">Submitted <?= timeAgo($existingSub['submitted_at']) ?></div>
+                                        </div>
+                                        <a href="/<?= htmlspecialchars($existingSub['file_path']) ?>" target="_blank" class="btn btn-sm btn-primary" title="Download my submission">&#128190; Download</a>
+                                    </div>
+                                    <p style="font-size: 0.85rem; color: var(--gray); margin-top: 6px;">Upload a new file below to replace this submission.</p>
                                 </div>
                                 <?php endif; ?>
 
                                 <div class="form-group">
-                                    <label class="form-label">Submission Text (optional)</label>
-                                    <textarea name="submission_text" class="form-control" rows="6" placeholder="Enter your answer or notes here..."></textarea>
-                                </div>
-
-                                <div class="form-group">
-                                    <label class="form-label">Attach File</label>
-                                    <div class="upload-zone" onclick="this.querySelector('input').click()">
-                                        <div class="upload-zone-icon">&#128194;</div>
-                                        <div class="upload-zone-text">Click to upload or drag and drop</div>
-                                        <div class="upload-zone-hint">Allowed: <?= htmlspecialchars($assignment['allowed_file_types'] ?? '') ?> (Max <?= $assignment['max_file_size_mb'] ?? 10 ?>MB)</div>
-                                        <input type="file" name="submission_file" style="display: none;" accept=".pdf,.zip,.doc,.docx">
+                                    <label class="form-label">
+                                        <?= $existingSub ? 'Replace File (optional)' : 'Attach File' ?>
+                                    </label>
+                                    <div class="upload-zone" id="uploadZone" onclick="document.getElementById('submissionFile').click()">
+                                        <div class="upload-zone-icon" id="uploadIcon">&#128194;</div>
+                                        <div class="upload-zone-text" id="uploadText">Click to upload or drag and drop</div>
+                                        <div class="upload-zone-hint" id="uploadHint">Allowed: <?= htmlspecialchars($assignment['allowed_file_types'] ?? '') ?> (Max <?= $assignment['max_file_size_mb'] ?? 10 ?>MB)</div>
+                                        <input type="file" name="submission_file" id="submissionFile" style="display: none;" accept=".pdf,.zip,.doc,.docx" onchange="handleFileSelect(this, <?= ($assignment['max_file_size_mb'] ?? 10) * 1024 * 1024 ?>)">
                                     </div>
-                                    <div class="file-list" style="margin-top: 10px;"></div>
+                                    <div class="file-list" id="fileList" style="margin-top: 10px;"></div>
+                                    <div id="uploadStatus" style="margin-top: 8px; font-size: 0.85rem; display: none;"></div>
                                 </div>
 
-                                <button type="submit" class="btn btn-primary" style="width: 100%; margin-top: 10px;">
-                                    <?= $existingSub ? 'Resubmit Assignment' : 'Submit Assignment' ?>
-                                </button>
+                                <div id="submitArea">
+                                    <button type="submit" class="btn btn-primary" style="width: 100%; margin-top: 10px;" id="submitBtn">
+                                        <?= $existingSub ? '&#128260; Resubmit Assignment' : '&#128228; Submit Assignment' ?>
+                                    </button>
+                                </div>
                             </form>
+                            <?php endif; ?>
                         </div>
                     </div>
                 </div>
 
                 <script>
-                initFileUpload();
+                // File upload handling with validation
+                function handleFileSelect(input, maxSize) {
+                    const file = input.files[0];
+                    const statusDiv = document.getElementById('uploadStatus');
+                    const fileList = document.getElementById('fileList');
+                    
+                    if (!file) {
+                        fileList.innerHTML = '';
+                        statusDiv.style.display = 'none';
+                        return;
+                    }
+                    
+                    // Validate file size
+                    if (file.size > maxSize) {
+                        showNotification('File size exceeds ' + (maxSize / 1024 / 1024) + 'MB limit.', 'error');
+                        input.value = '';
+                        fileList.innerHTML = '';
+                        return;
+                    }
+                    
+                    // Validate file type
+                    const allowedTypes = ['pdf', 'zip', 'doc', 'docx'];
+                    const ext = file.name.split('.').pop().toLowerCase();
+                    if (!allowedTypes.includes(ext)) {
+                        showNotification('Invalid file type. Allowed: ' + allowedTypes.join(', '), 'error');
+                        input.value = '';
+                        fileList.innerHTML = '';
+                        return;
+                    }
+                    
+                    // Show file info
+                    fileList.innerHTML = `
+                        <div style="display: flex; align-items: center; gap: 10px; padding: 10px; background: #e3f2fd; border-radius: 8px; border: 1px solid #90caf9;">
+                            <span style="font-size: 1.2rem;">&#128196;</span>
+                            <div style="flex: 1;">
+                                <div style="font-weight: 500; font-size: 0.9rem;">${file.name}</div>
+                                <div style="font-size: 0.8rem; color: var(--gray);">${(file.size / 1024).toFixed(1)} KB</div>
+                            </div>
+                            <button type="button" class="btn btn-sm btn-danger" onclick="clearFile()">&#10005; Remove</button>
+                        </div>
+                    `;
+                    
+                    statusDiv.innerHTML = '<span style="color: var(--success);">&#10003; File ready for upload</span>';
+                    statusDiv.style.display = 'block';
+                }
+                
+                function clearFile() {
+                    document.getElementById('submissionFile').value = '';
+                    document.getElementById('fileList').innerHTML = '';
+                    document.getElementById('uploadStatus').style.display = 'none';
+                }
 
+                // Form submission
                 document.getElementById('submitAssignmentForm').addEventListener('submit', async function(e) {
                     e.preventDefault();
-                    const btn = this.querySelector('button[type="submit"]');
+                    
+                    const btn = document.getElementById('submitBtn');
+                    const originalText = btn.innerHTML;
                     btn.disabled = true;
-                    btn.innerHTML = '<div class="spinner"></div> Uploading...';
+                    btn.innerHTML = '<span class="spinner"></span> Uploading...';
+                    
+                    const statusDiv = document.getElementById('uploadStatus');
+                    statusDiv.innerHTML = '<span style="color: var(--primary);">&#128259; Uploading file... Please wait</span>';
+                    statusDiv.style.display = 'block';
 
                     const formData = new FormData(this);
                     formData.append('action', 'submit');
@@ -683,89 +886,175 @@ if ($section === 'take_quiz' && isset($_GET['id'])) {
                     try {
                         const res = await fetch('/api/assignments.php', { method: 'POST', body: formData });
                         const data = await res.json();
+                        
                         if (data.success) {
-                            showNotification('Assignment submitted!', 'success');
-                            setTimeout(() => window.location.href = '?section=todo', 1000);
+                            statusDiv.innerHTML = '<span style="color: var(--success);">&#10003; ' + data.message + '</span>';
+                            showNotification(data.message, 'success');
+                            setTimeout(() => window.location.href = '?section=todo', 1500);
                         } else {
-                            showNotification(data.message, 'error');
+                            statusDiv.innerHTML = '<span style="color: var(--danger);">&#10007; ' + (data.message || 'Error') + '</span>';
+                            showNotification(data.message || 'Error submitting assignment', 'error');
                             btn.disabled = false;
-                            btn.innerHTML = 'Submit Assignment';
+                            btn.innerHTML = originalText;
                         }
                     } catch (err) {
+                        statusDiv.innerHTML = '<span style="color: var(--danger);">&#10007; Network error. Please try again.</span>';
                         showNotification('Error submitting assignment', 'error');
                         btn.disabled = false;
-                        btn.innerHTML = 'Submit Assignment';
+                        btn.innerHTML = originalText;
                     }
                 });
                 </script>
                 <?php endif; ?>
-
-                <?php if ($section === 'grades'): ?>
+                <?php endif; ?>
+                                <?php if ($section === 'gradebook'): ?>
                 <div class="page-header">
-                    <h1 class="page-title">My Grades</h1>
-                    <p class="page-subtitle">View all your quiz scores and assignment grades</p>
+                    <h1 class="page-title">My Gradebook</h1>
+                    <p class="page-subtitle">View all your grades and feedback organized by course</p>
                 </div>
 
-                <div class="card" style="margin-bottom: 20px;">
-                    <div class="card-header"><span class="card-title">Quiz Results</span></div>
-                    <div class="card-body" style="padding: 0;">
-                        <div class="table-container">
-                            <table class="data-table">
-                                <thead>
-                                    <tr><th>Quiz</th><th>Course</th><th>Score</th><th>Percentage</th><th>Grade</th><th>Submitted</th></tr>
-                                </thead>
-                                <tbody>
-                                    <?php foreach ($quizResults as $r):
-                                        $pct = $r['percentage'] ?? 0;
-                                        $gradeClass = $pct >= 85 ? 'grade-excellent' : ($pct >= 70 ? 'grade-good' : ($pct >= 60 ? 'grade-average' : 'grade-poor'));
-                                        $grade = $pct >= 85 ? 'A' : ($pct >= 70 ? 'B' : ($pct >= 60 ? 'C' : ($pct >= 50 ? 'D' : 'F')));
-                                    ?>
-                                    <tr>
-                                        <td><?= htmlspecialchars($r['quiz_title']) ?></td>
-                                        <td><?= htmlspecialchars($r['course_code']) ?></td>
-                                        <td><?= $r['score'] !== null ? $r['score'] . '/' . $r['total_marks'] : 'N/A' ?></td>
-                                        <td class="<?= $gradeClass ?>"><?= $r['percentage'] !== null ? number_format($r['percentage'], 1) . '%' : 'N/A' ?></td>
-                                        <td><span class="badge badge-<?= $pct >= 60 ? 'success' : 'danger' ?>"><?= $grade ?></span></td>
-                                        <td><?= timeAgo($r['submitted_at'] ?? $r['started_at']) ?></td>
-                                    </tr>
-                                    <?php endforeach; ?>
-                                    <?php if (empty($quizResults)): ?>
-                                    <tr><td colspan="6" style="text-align:center;color:var(--gray);padding:30px;">No quiz results yet.</td></tr>
-                                    <?php endif; ?>
-                                </tbody>
-                            </table>
-                        </div>
-                    </div>
-                </div>
-
+                <?php if (empty($enrolledCourses)): ?>
                 <div class="card">
-                    <div class="card-header"><span class="card-title">Assignment Grades</span></div>
-                    <div class="card-body" style="padding: 0;">
-                        <div class="table-container">
-                            <table class="data-table">
-                                <thead>
-                                    <tr><th>Assignment</th><th>Course</th><th>Submitted</th><th>Status</th><th>Marks</th><th>Feedback</th><th>Graded By</th></tr>
-                                </thead>
-                                <tbody>
-                                    <?php foreach ($assignmentGrades as $g): ?>
-                                    <tr>
-                                        <td><?= htmlspecialchars($g['assignment_title']) ?></td>
-                                        <td><?= htmlspecialchars($g['course_code']) ?></td>
-                                        <td><?= timeAgo($g['submitted_at']) ?> <?= $g['is_late'] ? '<span class="badge badge-warning">Late</span>' : '' ?></td>
-                                        <td><span class="badge badge-<?= $g['status'] === 'graded' ? 'success' : 'warning' ?>"><?= ucfirst($g['status']) ?></span></td>
-                                        <td><?= $g['marks_obtained'] !== null ? $g['marks_obtained'] . '/' . $g['max_marks'] : '-' ?></td>
-                                        <td><?= $g['feedback'] ? htmlspecialchars(substr($g['feedback'], 0, 50)) . '...' : '-' ?></td>
-                                        <td><?= $g['graded_by_name'] ? htmlspecialchars($g['graded_by_name']) : '-' ?></td>
-                                    </tr>
-                                    <?php endforeach; ?>
-                                    <?php if (empty($assignmentGrades)): ?>
-                                    <tr><td colspan="7" style="text-align:center;color:var(--gray);padding:30px;">No assignment submissions yet.</td></tr>
-                                    <?php endif; ?>
-                                </tbody>
-                            </table>
-                        </div>
+                    <div class="card-body" style="text-align: center; padding: 60px;">
+                        <div style="font-size: 3rem; margin-bottom: 12px;">&#128218;</div>
+                        <h3 style="color: var(--gray);">No Enrolled Courses</h3>
+                        <p style="color: var(--gray);">You are not enrolled in any courses yet.</p>
                     </div>
                 </div>
+                <?php endif; ?>
+
+                <?php foreach ($enrolledCourses as $course): 
+                    $courseQuizzes = $db->query(
+                        "SELECT q.title, qa.score, qa.percentage, qa.status, qa.submitted_at, q.total_marks
+                         FROM quizzes q
+                         LEFT JOIN quiz_attempts qa ON q.id = qa.quiz_id AND qa.student_id = ?
+                         WHERE q.course_id = ? AND q.is_published = 1 AND qa.status IN ('submitted', 'graded', 'auto_submitted')
+                         ORDER BY q.created_at DESC",
+                        [$user['id'], $course['id']]
+                    )->fetchAll();
+                    
+                    $courseAssignments = $db->query(
+                        "SELECT a.title, asub.marks_obtained, asub.feedback, asub.status, asub.submitted_at, a.max_marks, asub.graded_at, asub.is_late
+                         FROM assignments a
+                         LEFT JOIN assignment_submissions asub ON a.id = asub.assignment_id AND asub.student_id = ?
+                         WHERE a.course_id = ? AND a.is_published = 1
+                         ORDER BY a.created_at DESC",
+                        [$user['id'], $course['id']]
+                    )->fetchAll();
+                    
+                    $hasAnyGrades = !empty($courseQuizzes) || !empty(array_filter($courseAssignments, fn($a) => $a['status'] === 'graded'));
+                ?>
+                <div class="card" style="margin-bottom: 24px;">
+                    <div class="card-header" style="display: flex; justify-content: space-between; align-items: center;">
+                        <span class="card-title">&#128218; <?= htmlspecialchars($course['course_code'] . ' - ' . $course['course_name']) ?></span>
+                        <?php if ($hasAnyGrades): ?>
+                        <span class="badge badge-success">Grades Available</span>
+                        <?php else: ?>
+                        <span class="badge badge-secondary">No Grades Yet</span>
+                        <?php endif; ?>
+                    </div>
+                    
+                    <div class="card-body" style="padding: 0;">
+                        <?php if (!empty($courseQuizzes)): ?>
+                        <div style="padding: 16px 20px; border-bottom: 1px solid #e9ecef;">
+                            <h4 style="margin: 0 0 12px 0; color: var(--primary); font-size: 1rem;">&#128221; Quizzes</h4>
+                            <div class="table-container">
+                                <table class="data-table" style="margin: 0;">
+                                    <thead>
+                                        <tr><th>Quiz</th><th>Score</th><th>Percentage</th><th>Grade</th><th>Submitted</th></tr>
+                                    </thead>
+                                    <tbody>
+                                        <?php foreach ($courseQuizzes as $quiz):
+                                            $pct = $quiz['percentage'] ?? 0;
+                                            $gradeClass = $pct >= 85 ? 'grade-excellent' : ($pct >= 70 ? 'grade-good' : ($pct >= 60 ? 'grade-average' : 'grade-poor'));
+                                            $letterGrade = $pct >= 85 ? 'A' : ($pct >= 70 ? 'B' : ($pct >= 60 ? 'C' : ($pct >= 50 ? 'D' : 'F')));
+                                        ?>
+                                        <tr>
+                                            <td><strong><?= htmlspecialchars($quiz['title']) ?></strong></td>
+                                            <td><?= $quiz['score'] !== null ? $quiz['score'] . '/' . $quiz['total_marks'] : 'N/A' ?></td>
+                                            <td class="<?= $gradeClass ?>"><?= $quiz['percentage'] !== null ? number_format($quiz['percentage'], 1) . '%' : 'N/A' ?></td>
+                                            <td><span class="badge badge-<?= $pct >= 60 ? 'success' : 'danger' ?>"><?= $letterGrade ?></span></td>
+                                            <td><?= timeAgo($quiz['submitted_at']) ?></td>
+                                        </tr>
+                                        <?php endforeach; ?>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                        <?php endif; ?>
+                        
+                        <?php if (!empty($courseAssignments)): ?>
+                        <div style="padding: 16px 20px;">
+                            <h4 style="margin: 0 0 12px 0; color: var(--primary); font-size: 1rem;">&#128193; Assignments</h4>
+                            <div class="table-container">
+                                <table class="data-table" style="margin: 0;">
+                                    <thead>
+                                        <tr><th>Assignment</th><th>Status</th><th>Marks</th><th>Feedback</th><th>Submitted</th></tr>
+                                    </thead>
+                                    <tbody>
+                                        <?php foreach ($courseAssignments as $assign):
+                                            $isGraded = $assign['status'] === 'graded';
+                                            $pct = $isGraded && $assign['max_marks'] > 0 ? ($assign['marks_obtained'] / $assign['max_marks']) * 100 : 0;
+                                        ?>
+                                        <tr>
+                                            <td><strong><?= htmlspecialchars($assign['title']) ?></strong></td>
+                                            <td>
+                                                <?php if ($isGraded): ?>
+                                                <span class="badge badge-success">Graded</span>
+                                                <?php elseif ($assign['status'] === 'submitted'): ?>
+                                                <span class="badge badge-warning">Pending Grade</span>
+                                                <?php else: ?>
+                                                <span class="badge badge-secondary">Not Submitted</span>
+                                                <?php endif; ?>
+                                            </td>
+                                            <td>
+                                                <?php if ($isGraded): ?>
+                                                    <span style="font-weight: 600; color: <?= $pct >= 60 ? 'var(--success)' : 'var(--danger)' ?>;">
+                                                        <?= $assign['marks_obtained'] ?>/<?= $assign['max_marks'] ?>
+                                                        (<?= number_format($pct, 1) ?>%)
+                                                    </span>
+                                                <?php else: ?>
+                                                    <span style="color: var(--gray);">-</span>
+                                                <?php endif; ?>
+                                            </td>
+                                            <td style="max-width: 300px;">
+                                                <?php if ($isGraded && $assign['feedback']): ?>
+                                                    <div style="background: #e3f2fd; padding: 8px 12px; border-radius: 6px; font-size: 0.85rem; color: #1565c0; border-left: 3px solid var(--primary);">
+                                                        <strong>Dr. Comment:</strong> <?= nl2br(htmlspecialchars($assign['feedback'])) ?>
+                                                    </div>
+                                                <?php elseif ($isGraded): ?>
+                                                    <span style="color: var(--gray); font-size: 0.85rem;">No feedback provided</span>
+                                                <?php else: ?>
+                                                    <span style="color: var(--gray);">-</span>
+                                                <?php endif; ?>
+                                            </td>
+                                            <td>
+                                                <?php if ($assign['submitted_at']): ?>
+                                                    <?= timeAgo($assign['submitted_at']) ?>
+                                                    <?php if ($assign['is_late']): ?>
+                                                    <span class="badge badge-warning">Late</span>
+                                                    <?php endif; ?>
+                                                <?php else: ?>
+                                                    <span style="color: var(--gray);">-</span>
+                                                <?php endif; ?>
+                                            </td>
+                                        </tr>
+                                        <?php endforeach; ?>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                        <?php endif; ?>
+                        
+                        <?php if (empty($courseQuizzes) && empty(array_filter($courseAssignments, fn($a) => $a['status'] === 'graded'))): ?>
+                        <div style="padding: 40px; text-align: center; color: var(--gray);">
+                            <div style="font-size: 2rem; margin-bottom: 8px;">&#128221;</div>
+                            <p>No graded assessments available for this course yet.</p>
+                        </div>
+                        <?php endif; ?>
+                    </div>
+                </div>
+                <?php endforeach; ?>
                 <?php endif; ?>
             </div>
         </div>

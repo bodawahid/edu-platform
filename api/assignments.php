@@ -38,24 +38,113 @@ try {
             $maxMarks = filter_input(INPUT_POST, 'max_marks', FILTER_VALIDATE_FLOAT) ?: 100;
             $allowedTypes = sanitizeInput($_POST['allowed_types'] ?? 'pdf,zip,doc,docx', 'string');
             $maxFileSize = filter_input(INPUT_POST, 'max_file_size', FILTER_VALIDATE_INT) ?: 10;
+            $isPublished = filter_input(INPUT_POST, 'is_published', FILTER_VALIDATE_INT) ?: 0;
 
             if (!$courseId || empty($title) || empty($deadline)) {
                 jsonResponse(['success' => false, 'message' => 'Course, title, and deadline are required.'], 400);
             }
 
             $db->query(
-                "INSERT INTO assignments (course_id, title, description, instructions, deadline, max_marks, allowed_file_types, max_file_size_mb, created_by)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                [$courseId, $title, $description, $instructions, $deadline, $maxMarks, $allowedTypes, $maxFileSize, $user['id']]
+                "INSERT INTO assignments (course_id, title, description, instructions, deadline, max_marks, allowed_file_types, max_file_size_mb, is_published, created_by)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                [$courseId, $title, $description, $instructions, $deadline, $maxMarks, $allowedTypes, $maxFileSize, $isPublished, $user['id']]
             );
 
             $newId = $db->lastInsertId();
+            $fileUploaded = false;
+
+            // Handle PDF instructions file upload
+            if (isset($_FILES['instructions_file']) && $_FILES['instructions_file']['tmp_name']) {
+                $result = uploadFile($_FILES['instructions_file'], 'assignments/instructions', ['pdf'], 10485760);
+                if ($result['success']) {
+                    $db->query(
+                        "INSERT INTO assignment_files (assignment_id, file_name, file_path, file_size, file_type, uploaded_by)
+                         VALUES (?, ?, ?, ?, ?, ?)",
+                        [$newId, $result['filename'], $result['path'], $result['size'], $result['type'], $user['id']]
+                    );
+                    $fileUploaded = true;
+                }
+            }
+
             logActivity('assignment_created', 'assignment', $newId, "Created assignment: $title");
             
-            // 🚨 1️⃣ إشعار للطلبة: شيت أو واجب جديد نزل
+            // Notification for students
             addNotification(null, 'student', 'assignment', '📚 New Assignment Posted', "A new assignment has been uploaded: \"{$title}\". Check the deadline.");
 
-            jsonResponse(['success' => true, 'message' => 'Assignment created successfully.', 'id' => $newId]);
+            jsonResponse([
+                'success' => true, 
+                'message' => 'Assignment created successfully.', 
+                'id' => $newId,
+                'file_uploaded' => $fileUploaded
+            ]);
+            break;
+
+        case 'update':
+            if ($user['role_name'] !== 'doctor' && $user['role_name'] !== 'admin') {
+                jsonResponse(['success' => false, 'message' => 'Only doctors can update assignments.'], 403);
+            }
+
+            $id = filter_input(INPUT_POST, 'id', FILTER_VALIDATE_INT);
+            if (!$id) jsonResponse(['success' => false, 'message' => 'Invalid assignment ID.'], 400);
+
+            // Verify ownership
+            $existing = $db->query("SELECT created_by FROM assignments WHERE id = ?", [$id])->fetch();
+            if (!$existing || ($existing['created_by'] != $user['id'] && $user['role_name'] !== 'admin')) {
+                jsonResponse(['success' => false, 'message' => 'You do not have permission to edit this assignment.'], 403);
+            }
+
+            $fields = [];
+            $params = [];
+
+            if (!empty($_POST['title'])) { $fields[] = "title = ?"; $params[] = sanitizeInput($_POST['title'], 'string'); }
+            if (isset($_POST['description'])) { $fields[] = "description = ?"; $params[] = sanitizeInput($_POST['description'], 'string'); }
+            if (isset($_POST['instructions'])) { $fields[] = "instructions = ?"; $params[] = sanitizeInput($_POST['instructions'], 'string'); }
+            if (!empty($_POST['deadline'])) { $fields[] = "deadline = ?"; $params[] = $_POST['deadline']; }
+            if (isset($_POST['max_marks'])) { 
+                $val = filter_input(INPUT_POST, 'max_marks', FILTER_VALIDATE_FLOAT);
+                if ($val !== false) { $fields[] = "max_marks = ?"; $params[] = $val; }
+            }
+
+            if (empty($fields)) {
+                jsonResponse(['success' => false, 'message' => 'No fields to update.'], 400);
+            }
+
+            $params[] = $id;
+            $db->query("UPDATE assignments SET " . implode(', ', $fields) . " WHERE id = ?", $params);
+
+            logActivity('assignment_updated', 'assignment', $id, "Updated assignment ID: $id");
+            jsonResponse(['success' => true, 'message' => 'Assignment updated successfully.']);
+            break;
+
+        case 'toggle_publish':
+            if ($user['role_name'] !== 'doctor' && $user['role_name'] !== 'admin') {
+                jsonResponse(['success' => false, 'message' => 'Access denied.'], 403);
+            }
+
+            $id = filter_input(INPUT_POST, 'id', FILTER_VALIDATE_INT);
+            $isPublished = filter_input(INPUT_POST, 'is_published', FILTER_VALIDATE_INT);
+
+            if (!$id || $isPublished === null) {
+                jsonResponse(['success' => false, 'message' => 'Assignment ID and status are required.'], 400);
+            }
+
+            // Verify ownership
+            $existing = $db->query("SELECT created_by, title, is_published FROM assignments WHERE id = ?", [$id])->fetch();
+            if (!$existing || ($existing['created_by'] != $user['id'] && $user['role_name'] !== 'admin')) {
+                jsonResponse(['success' => false, 'message' => 'Permission denied.'], 403);
+            }
+
+            $db->query("UPDATE assignments SET is_published = ? WHERE id = ?", [$isPublished ? 1 : 0, $id]);
+            
+            $statusText = $isPublished ? 'published' : 'set to draft';
+            logActivity('assignment_publish_toggled', 'assignment', $id, "Assignment $id $statusText");
+
+            // Notify students if published
+            if ($isPublished && !$existing['is_published']) {
+                addNotification(null, 'student', 'assignment', '📢 Assignment Published', "Assignment \"{$existing['title']}\" is now published and available.");
+            }
+
+            jsonResponse(['success' => true, 'message' => 'Assignment ' . $statusText . ' successfully.']);
             break;
 
         case 'submit':
@@ -68,6 +157,12 @@ try {
 
             if (!$assignmentId) {
                 jsonResponse(['success' => false, 'message' => 'Assignment ID is required.'], 400);
+            }
+
+            // Check if assignment is published
+            $assignment = $db->query("SELECT title, deadline, created_by, late_submission_allowed, is_published FROM assignments WHERE id = ?", [$assignmentId])->fetch();
+            if (!$assignment || !$assignment['is_published']) {
+                jsonResponse(['success' => false, 'message' => 'This assignment is not available for submission.'], 400);
             }
 
             // Handle file upload
@@ -85,8 +180,6 @@ try {
                 ];
             }
 
-            // Check if late
-            $assignment = $db->query("SELECT title, deadline, created_by, late_submission_allowed FROM assignments WHERE id = ?", [$assignmentId])->fetch();
             $isLate = false;
             if ($assignment) {
                 $isLate = strtotime('now') > strtotime($assignment['deadline']);
@@ -114,7 +207,6 @@ try {
 
             logActivity('assignment_submitted', 'assignment_submission', $subId, "Submitted assignment $assignmentId");
             
-            // 🚨 2️⃣ إشعار للدكتور: طالب رفع حل الشيت
             $studentName = htmlspecialchars($user['username'] ?? 'A student');
             $assignTitle = htmlspecialchars($assignment['title'] ?? 'Assignment');
             $instructorId = $assignment['created_by'] ?? null;
@@ -144,7 +236,6 @@ try {
 
             logActivity('assignment_graded', 'assignment_submission', $submissionId, "Graded submission $submissionId with $marks marks");
             
-            // جلب الـ student_id واسم الشيت عشان نوجه الإشعار للطالب الصاحب الشيت
             $submissionData = $db->query(
                 "SELECT s.student_id, a.title 
                  FROM assignment_submissions s 
@@ -156,8 +247,6 @@ try {
             if ($submissionData) {
                 $targetStudentId = $submissionData['student_id'];
                 $assignTitle = htmlspecialchars($submissionData['title'] ?? 'Assignment');
-                
-                // 🚨 3️⃣ إشعار موجه للطالب: واجبك اتصحح والدرجة ظهرت
                 addNotification($targetStudentId, 'student', 'assignment_graded', '📊 Assignment Graded', "Your submission for \"{$assignTitle}\" has been graded. Marks: {$marks}");
             }
 
@@ -167,6 +256,12 @@ try {
         case 'delete':
             $id = filter_input(INPUT_POST, 'id', FILTER_VALIDATE_INT);
             if (!$id) jsonResponse(['success' => false, 'message' => 'Invalid assignment ID.'], 400);
+
+            // Verify ownership before delete
+            $existing = $db->query("SELECT created_by FROM assignments WHERE id = ?", [$id])->fetch();
+            if (!$existing || ($existing['created_by'] != $user['id'] && $user['role_name'] !== 'admin')) {
+                jsonResponse(['success' => false, 'message' => 'Permission denied.'], 403);
+            }
 
             $db->query("DELETE FROM assignments WHERE id = ?", [$id]);
             logActivity('assignment_deleted', 'assignment', $id, "Deleted assignment ID: $id");

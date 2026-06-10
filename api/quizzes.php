@@ -105,17 +105,39 @@ try {
             jsonResponse(['success' => true, 'message' => 'Question added successfully.']);
             break;
 
-        case 'update':
+                case 'update':
             $id = filter_input(INPUT_POST, 'id', FILTER_VALIDATE_INT);
             if (!$id) jsonResponse(['success' => false, 'message' => 'Invalid quiz ID.'], 400);
+
+            // Verify ownership
+            $existing = $db->query("SELECT created_by FROM quizzes WHERE id = ?", [$id])->fetch();
+            if (!$existing || ($existing['created_by'] != $user['id'] && $user['role_name'] !== 'admin')) {
+                jsonResponse(['success' => false, 'message' => 'Permission denied.'], 403);
+            }
 
             $fields = [];
             $params = [];
 
             if (!empty($_POST['title'])) { $fields[] = "title = ?"; $params[] = sanitizeInput($_POST['title'], 'string'); }
-            if (!empty($_POST['description'])) { $fields[] = "description = ?"; $params[] = sanitizeInput($_POST['description'], 'string'); }
-            if (isset($_POST['duration_minutes'])) { $fields[] = "duration_minutes = ?"; $params[] = filter_input(INPUT_POST, 'duration_minutes', FILTER_VALIDATE_INT); }
-            if (isset($_POST['is_published'])) { $fields[] = "is_published = ?"; $params[] = filter_input(INPUT_POST, 'is_published', FILTER_VALIDATE_INT); }
+            if (isset($_POST['description'])) { $fields[] = "description = ?"; $params[] = sanitizeInput($_POST['description'], 'string'); }
+            if (isset($_POST['duration_minutes'])) { 
+                $val = filter_input(INPUT_POST, 'duration_minutes', FILTER_VALIDATE_INT);
+                if ($val !== false) { $fields[] = "duration_minutes = ?"; $params[] = $val; }
+            }
+            if (isset($_POST['total_marks'])) { 
+                $val = filter_input(INPUT_POST, 'total_marks', FILTER_VALIDATE_FLOAT);
+                if ($val !== false) { $fields[] = "total_marks = ?"; $params[] = $val; }
+            }
+            if (isset($_POST['passing_marks'])) { 
+                $val = filter_input(INPUT_POST, 'passing_marks', FILTER_VALIDATE_FLOAT);
+                if ($val !== false) { $fields[] = "passing_marks = ?"; $params[] = $val; }
+            }
+            if (isset($_POST['start_time'])) { $fields[] = "start_time = ?"; $params[] = $_POST['start_time']; }
+            if (isset($_POST['end_time'])) { $fields[] = "end_time = ?"; $params[] = $_POST['end_time']; }
+            if (isset($_POST['is_published'])) { 
+                $fields[] = "is_published = ?"; 
+                $params[] = filter_input(INPUT_POST, 'is_published', FILTER_VALIDATE_INT) ? 1 : 0; 
+            }
 
             if (empty($fields)) jsonResponse(['success' => false, 'message' => 'No fields to update.'], 400);
 
@@ -123,6 +145,37 @@ try {
             $db->query("UPDATE quizzes SET " . implode(', ', $fields) . " WHERE id = ?", $params);
             logActivity('quiz_updated', 'quiz', $id, "Updated quiz ID: $id");
             jsonResponse(['success' => true, 'message' => 'Quiz updated.']);
+            break;
+
+        case 'toggle_publish':
+            if ($user['role_name'] !== 'doctor' && $user['role_name'] !== 'admin') {
+                jsonResponse(['success' => false, 'message' => 'Access denied.'], 403);
+            }
+
+            $id = filter_input(INPUT_POST, 'id', FILTER_VALIDATE_INT);
+            $isPublished = filter_input(INPUT_POST, 'is_published', FILTER_VALIDATE_INT);
+
+            if (!$id || $isPublished === null) {
+                jsonResponse(['success' => false, 'message' => 'Quiz ID and status are required.'], 400);
+            }
+
+            // Verify ownership
+            $existing = $db->query("SELECT created_by, title, is_published FROM quizzes WHERE id = ?", [$id])->fetch();
+            if (!$existing || ($existing['created_by'] != $user['id'] && $user['role_name'] !== 'admin')) {
+                jsonResponse(['success' => false, 'message' => 'Permission denied.'], 403);
+            }
+
+            $db->query("UPDATE quizzes SET is_published = ? WHERE id = ?", [$isPublished ? 1 : 0, $id]);
+            
+            $statusText = $isPublished ? 'published' : 'set to draft';
+            logActivity('quiz_publish_toggled', 'quiz', $id, "Quiz $id $statusText");
+
+            // Notify students if newly published
+            if ($isPublished && !$existing['is_published']) {
+                addNotification(null, 'student', 'quiz', '📝 Quiz Published', "Quiz \"{$existing['title']}\" is now published and ready to take.");
+            }
+
+            jsonResponse(['success' => true, 'message' => 'Quiz ' . $statusText . ' successfully.']);
             break;
 
         case 'delete':

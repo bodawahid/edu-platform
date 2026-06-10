@@ -164,7 +164,7 @@ try {
 
             jsonResponse(['success' => true, 'message' => 'TA assigned successfully.']);
             break;
-        case 'get_course':
+                case 'get_course':
             $id = filter_input(INPUT_POST, 'id', FILTER_VALIDATE_INT);
             if (!$id) jsonResponse(['success' => false, 'message' => 'Invalid course ID.'], 400);
 

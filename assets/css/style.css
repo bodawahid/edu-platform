@@ -1425,3 +1425,74 @@ textarea.form-control {
 @keyframes spin {
     to { transform: rotate(360deg); }
 }
+/* Toggle button styles */
+.btn-success { background: #27ae60; color: white; }
+.btn-warning { background: #f39c12; color: white; }
+.btn-secondary { background: #7f8c8d; color: white; }
+
+/* File upload styling */
+input[type="file"].form-control {
+    padding: 8px;
+    border: 2px dashed var(--gray-light);
+    background: #f8f9fa;
+    cursor: pointer;
+}
+input[type="file"].form-control:hover {
+    border-color: var(--primary);
+    background: #e3f2fd;
+}
+
+/* Action buttons gap */
+td .btn {
+    margin: 2px;
+    padding: 4px 10px;
+    font-size: 0.8rem;
+}
+/* Upload Zone Enhancements */
+.upload-zone {
+    border: 2px dashed var(--gray-light);
+    border-radius: 12px;
+    padding: 30px;
+    text-align: center;
+    cursor: pointer;
+    transition: all 0.3s ease;
+    background: #fafafa;
+}
+.upload-zone:hover {
+    border-color: var(--primary);
+    background: #e3f2fd;
+}
+.upload-zone-icon {
+    font-size: 2.5rem;
+    margin-bottom: 8px;
+}
+.upload-zone-text {
+    font-weight: 500;
+    color: var(--dark);
+    margin-bottom: 4px;
+}
+.upload-zone-hint {
+    font-size: 0.8rem;
+    color: var(--gray);
+}
+
+/* Gradebook Styles */
+.grade-excellent { color: #27ae60; font-weight: 700; }
+.grade-good { color: #2980b9; font-weight: 600; }
+.grade-average { color: #f39c12; font-weight: 600; }
+.grade-poor { color: #e74c3c; font-weight: 600; }
+
+/* Spinner */
+.spinner {
+    display: inline-block;
+    width: 16px;
+    height: 16px;
+    border: 2px solid rgba(255,255,255,0.3);
+    border-radius: 50%;
+    border-top-color: #fff;
+    animation: spin 1s ease-in-out infinite;
+    margin-right: 8px;
+}
+@keyframes spin {
+    to { transform: rotate(360deg); }
+}
