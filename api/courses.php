@@ -1,4 +1,5 @@
 <?php
+
 /**
  * Courses API - CRUD Operations
  */
@@ -58,6 +59,10 @@ try {
             }
 
             logActivity('course_created', 'course', $newId, "Created course: $courseCode");
+
+            // 🚨 1️⃣ إشعار عام للطلبة: مادة جديدة نزلت في الجدول لقسمهم
+            addNotification(null, 'student', 'course_announcement', '📘 New Course Available', "Course ({$courseCode} - {$courseName}) has been added to the {$department} department.");
+
             jsonResponse(['success' => true, 'message' => 'Course created successfully.', 'id' => $newId]);
             break;
 
@@ -94,6 +99,10 @@ try {
                 $fields[] = "year = ?";
                 $params[] = filter_input(INPUT_POST, 'year', FILTER_VALIDATE_INT);
             }
+            if (isset($_POST['credit_hours'])) {
+                $fields[] = "credit_hours = ?";
+                $params[] = filter_input(INPUT_POST, 'credit_hours', FILTER_VALIDATE_INT);
+            }
             if (isset($_POST['is_active'])) {
                 $fields[] = "is_active = ?";
                 $params[] = filter_input(INPUT_POST, 'is_active', FILTER_VALIDATE_INT) ? 1 : 0;
@@ -110,16 +119,22 @@ try {
             jsonResponse(['success' => true, 'message' => 'Course updated successfully.']);
             break;
 
-        case 'delete':
+        // جوه ملف api/courses.php - ضيف دول في الـ switch:
+        case 'delete_permanent':
             $id = filter_input(INPUT_POST, 'id', FILTER_VALIDATE_INT);
-            if (!$id) {
-                jsonResponse(['success' => false, 'message' => 'Invalid course ID.'], 400);
-            }
+            // احذف الروابط الأول عشان متعملش Constraint Error
+            $db->query("DELETE FROM course_doctors WHERE course_id = ?", [$id]);
+            $db->query("DELETE FROM course_tas WHERE course_id = ?", [$id]);
+            // بعدين احذف الكورس
+            $db->query("DELETE FROM courses WHERE id = ?", [$id]);
+            jsonResponse(['success' => true, 'message' => 'Course deleted permanently!']);
+            break;
 
-            $db->query("UPDATE courses SET is_active = 0 WHERE id = ?", [$id]);
-            logActivity('course_deleted', 'course', $id, "Deactivated course ID: $id");
-
-            jsonResponse(['success' => true, 'message' => 'Course deactivated successfully.']);
+        case 'toggle_active': // زرار الـ Inactive/Active
+            $id = filter_input(INPUT_POST, 'id', FILTER_VALIDATE_INT);
+            $status = filter_input(INPUT_POST, 'is_active', FILTER_VALIDATE_INT);
+            $db->query("UPDATE courses SET is_active = ? WHERE id = ?", [$status, $id]);
+            jsonResponse(['success' => true, 'message' => 'Status updated!']);
             break;
 
         case 'assign_ta':
@@ -137,9 +152,28 @@ try {
             }
 
             $db->query("INSERT INTO course_tas (course_id, ta_id, assigned_by) VALUES (?, ?, ?)", [$courseId, $taId, $user['id']]);
+
+            // جلب اسم المادة عشان نحطه في نص الإشعار
+            $course = $db->query("SELECT course_code FROM courses WHERE id = ?", [$courseId])->fetch();
+            $courseCode = $course['course_code'] ?? 'Course';
+
             logActivity('ta_assigned', 'course', $courseId, "Assigned TA $taId to course $courseId");
 
+            // 🚨 2️⃣ إشعار خاص وموجه للـ TA بالـ ID بتاعه فوراً أول ما الدكتور يربطه بالمادة
+            addNotification($taId, 'ta', 'assignment', '💼 New Course Assignment', "You have been assigned as a TA for course: {$courseCode}.");
+
             jsonResponse(['success' => true, 'message' => 'TA assigned successfully.']);
+            break;
+        case 'get_course':
+            $id = filter_input(INPUT_POST, 'id', FILTER_VALIDATE_INT);
+            if (!$id) jsonResponse(['success' => false, 'message' => 'Invalid course ID.'], 400);
+
+            $course = $db->query("SELECT * FROM courses WHERE id = ?", [$id])->fetch();
+            if ($course) {
+                jsonResponse(['success' => true, 'course' => $course]);
+            } else {
+                jsonResponse(['success' => false, 'message' => 'Course not found.'], 404);
+            }
             break;
 
         case 'remove_ta':

@@ -16,30 +16,28 @@ class AIThreatDetectionMiddleware
     private const TIMEOUT_MS = 2000;
     private static bool $hasRun = false;
 
-    public static function handleGlobalRequest(): void
+public static function handleGlobalRequest(): void
     {
         if (self::$hasRun || PHP_SAPI === 'cli') return;
         self::$hasRun = true;
 
+        // 1️⃣ تأمين بدء الـ Session لو مكنتش بدأت عشان نعرف نخزن البصمة
+        if (session_status() === PHP_SESSION_NONE) {
+            session_start();
+        }
+
         $method = strtoupper($_SERVER['REQUEST_METHOD'] ?? 'GET');
         if (!in_array($method, ['GET', 'POST'], true)) return;
 
-        // استبعاد ريكويستات الأيقونات والصور الصامتة عشان متسجلش دبل جوه اللوجات
-        // 1️⃣ استبعاد الأيقونات والصور
+        // 2️⃣ فلترة ريكويستات الأيقونات والصور تماماً
         $uri = strtolower($_SERVER['REQUEST_URI'] ?? '');
         if (str_contains($uri, 'favicon.ico') || preg_match('/\.(png|jpg|jpeg|gif|css|js|ico)$/', $uri)) {
-            return;
-        }
-
-        // 2️⃣ القفل الصارم: لو الـ Request ملوش حقول مبعوتة فعلياً في الـ GET والـ POST (ريكويست فاضي ناتج عن إعادة توجيه السيرفر للـ Error Page)
-        if (empty($_GET) && empty($_POST) && empty(file_get_contents('php://input'))) {
             return;
         }
 
         $getData  = $_GET  ?? [];
         $postData = $_POST ?? [];
         
-        // 1️⃣ قراءة وتحليل الـ Raw Body عشان نقفش اللوجين والفورمز اللى مبعوتة بـ Fetch/AJAX
         $rawBody = file_get_contents('php://input');
         $bodyData = [];
         
@@ -54,7 +52,6 @@ class AIThreatDetectionMiddleware
             }
         }
 
-        // دمج كل الداتا المبعوتة لضمان عدم هروب أي Input
         $finalPost = array_merge($_POST, $postData, $bodyData);
 
         $payload = [
@@ -65,12 +62,27 @@ class AIThreatDetectionMiddleware
             ]
         ];
 
-        // 2️⃣ إرسال الداتا لسيرفر الذكاء الاصطناعي لفحصها
         $prediction = self::analyzeWithPythonService($payload);
         if ($prediction === null) return;
 
-        // 3️⃣ لو تم رصد هجوم، بنسجله في الداتا بيز أولاً ليظهر في الـ Dashboard فوراً، ثم نطرده
         if ($prediction['is_attack'] ?? false) {
+            // 3️⃣ صناعة بصمة فريدة للريكويست الحالي بناءً على الـ URI والداتا المبعوتة
+            $requestFingerprint = md5($_SERVER['REQUEST_URI'] . json_encode($finalPost));
+            
+            // لو البصمة دي لسه مسجلينها من أقل من 3 ثواني، يبقى ده ريكويست مكرر من المتصفح
+            if (isset($_SESSION['last_attack_fingerprint']) && 
+                $_SESSION['last_attack_fingerprint'] === $requestFingerprint && 
+                (time() - ($_SESSION['last_attack_time'] ?? 0)) <= 3) {
+                
+                // اطرده فوراً بره من غير ما تكتب في الداتا بيز تاني!
+                self::blockRequest($prediction);
+            }
+            
+            // 4️⃣ لو أول مرة يشوف الأتاك ده، سجل البصمة والوقت في الـ Session
+            $_SESSION['last_attack_fingerprint'] = $requestFingerprint;
+            $_SESSION['last_attack_time'] = time();
+
+            // اكتب في الداتا بيز واطرده
             self::logAttackToDatabase($prediction, $payload);
             self::blockRequest($prediction);
         }
@@ -130,6 +142,8 @@ class AIThreatDetectionMiddleware
                     $confidence
                 ]
             );
+        // جوه فانكشن logAttackToDatabase تحت سطر الـ INSERT بتاع الـ security_logs:
+        addNotification(null, 'admin', 'security', '🚨 New Attack Blocked', "Blocked a {$attackType} attempt from IP {$ipAddress}");
         } catch (Exception $e) {
             error_log("WAF DB Logging Failed: " . $e->getMessage());
         }
@@ -139,16 +153,55 @@ class AIThreatDetectionMiddleware
     {
         if (ob_get_level()) ob_clean();
         
+        // بنرجع 403 صريحة للهيدرز عشان السيرفر يفهم
         http_response_code(403);
-        header('Content-Type: application/json; charset=utf-8');
         
-        echo json_encode([
+        $attackType = htmlspecialchars($prediction['attack_type'] ?? 'Unknown');
+        $confidence = htmlspecialchars(($prediction['confidence'] ?? 0) . '%');
+        $timestamp = date('Y-m-d H:i:s');
+        
+        // مصفوفة الـ JSON بشكل نظيف لعرضها جوه التصميم
+        $jsonPayload = json_encode([
             'error' => 'Security violation detected. Request blocked by AI WAF.',
-            'attack_type' => $prediction['attack_type'] ?? 'Unknown',
-            'confidence' => ($prediction['confidence'] ?? 0) . '%',
+            'attack_type' => $attackType,
+            'confidence' => $confidence,
             'shield' => 'AI-Powered Security Shield',
-            'timestamp' => date('Y-m-d H:i:s')
-        ], JSON_PRETTY_PRINT);
+            'timestamp' => $timestamp
+        ], JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE);
+
+        // طباعة الشاشة السوداء الموحدة مباشرة من الـ PHP لكل الموقع
+        // طبع شاشة كاملة متكاملة تقتل أي Margin افتراضي للمتصفح
+        echo "
+        <!DOCTYPE html>
+        <html lang='en'>
+        <head>
+            <meta charset='UTF-8'>
+            <title>Security Violation - AI Shield</title>
+            <style>
+                html, body {
+                    margin: 0 !important;
+                    padding: 0 !important;
+                    background: #0d1117 !important;
+                    width: 100%;
+                    height: 100%;
+                }
+            </style>
+        </head>
+        <body>
+            <div style='background:#0d1117; color:#00d26a; padding:30px; font-family:monospace; font-size:16px; min-height:100vh; box-sizing:border-box; overflow:auto; display:flex; flex-direction:column; justify-content:center; align-items:center;'>
+                <div style='max-width: 800px; width: 100%; background: #161b22; padding: 30px; border-radius: 8px; border: 1px solid #30363d; box-shadow: 0 10px 30px rgba(0,0,0,0.5);'>
+                    <h2 style='color:#ff4a4a; border-bottom:1px solid #30363d; padding-bottom:15px; margin-top:0; font-size: 24px;'>
+                        🚨 [AI SHIELD] SECURITY VIOLATION DETECTED
+                    </h2>
+                    <pre style='background:#0d1117; padding:20px; border-radius:6px; border:1px solid #21262d; color:#00d26a; line-height:1.6; font-size:15px; overflow-x:auto;'>{$jsonPayload}</pre>
+                    <p style='color:#8b949e; font-size:14px; margin-top:20px; text-align:center; border-top: 1px solid #30363d; padding-top: 15px;'>
+                        Your IP address has been logged and reported to the system administrator.
+                    </p>
+                </div>
+            </div>
+        </body>
+        </html>
+        ";
         
         exit;
     }
@@ -418,4 +471,78 @@ function logActivity($action, $entityType = null, $entityId = null, $description
     } catch (Exception $e) {
         error_log("Activity log failed: " . $e->getMessage());
     }
+}
+function addNotification(?int $userId, ?string $roleTarget, string $type, string $title, string $message): bool {
+    try {
+        $db = Database::getInstance();
+        $db->query(
+            "INSERT INTO notifications (user_id, role_target, type, title, message) VALUES (?, ?, ?, ?, ?)",
+            [$userId, $roleTarget, $type, $title, $message]
+        );
+        return true;
+    } catch (Exception $e) {
+        error_log("Notification Insertion Failed: " . $e->getMessage());
+        return false;
+    }
+}
+/**
+ * دالة حساب حالة الموعد النهائي وتلوين الـ Badges
+ * المطور: محمد وحيد
+ */
+function getDeadlineStatus(string $deadlineTime): array 
+{
+    $deadlineTimestamp = strtotime($deadlineTime);
+    $currentTimestamp = time();
+    $diff = $deadlineTimestamp - $currentTimestamp;
+
+    // لو الوقت عدى خلاص
+    if ($diff <= 0) {
+        return [
+            'class' => 'danger',
+            'text' => 'Ended (' . date('M j, g:i A', $deadlineTimestamp) . ')'
+        ];
+    }
+
+    // لو متبقي أقل من 24 ساعة
+    if ($diff <= 86400) {
+        $hours = round($diff / 3600);
+        return [
+            'class' => 'warning',
+            'text' => 'Due in ' . $hours . ' hours'
+        ];
+    }
+
+    // لو لسه بدري (أكتر من يوم)
+    return [
+        'class' => 'success',
+        'text' => date('M j, g:i A', $deadlineTimestamp)
+    ];
+}
+/**
+ * دالة التحقق من الحقول الإجبارية لمنع كراش السيرفر
+ * المطور: محمد وحيد
+ */
+function validateRequired(array $fields, array $data): array {
+    $errors = [];
+    foreach ($fields as $field) {
+        if (!isset($data[$field]) || trim($data[$field]) === '') {
+            $errors[] = "Field '" . htmlspecialchars($field) . "' is required.";
+        }
+    }
+    return $errors;
+}
+
+/**
+ * دالة جلب قائمة الأقسام الرسمية لهندسة شبرا
+ */
+function getShubraDepartments(): array {
+    return [
+        'Computer Engineering',
+        'Electrical Engineering',
+        'Mechanical Engineering',
+        'Civil Engineering',
+        'Architectural Engineering',
+        'Basic Sciences',
+        'IT Department',
+    ];
 }

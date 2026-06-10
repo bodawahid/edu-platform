@@ -102,15 +102,83 @@ $quizAnalytics = $db->query(
                     <button class="sidebar-toggle" onclick="toggleSidebar()">&#9776;</button>
                     <h2 class="topbar-title">Doctor Dashboard</h2>
                 </div>
-                <div class="topbar-right">
-                    <span style="color: var(--gray); font-size: 0.9rem;"><?= htmlspecialchars($user['full_name']) ?></span>
+                <div class="topbar-right" style="display: flex; align-items: center; gap: 15px;">
+                    <span style="color: var(--gray); font-size: 0.9rem;">Dr. <?= htmlspecialchars($user['full_name']) ?></span>
+                    <div class="notification-wrapper" style="position: relative; display: inline-block;">
+                        <button class="topbar-icon-btn" id="notificationBtn">
+                            🔔 <span class="notification-badge" id="notificationCount" style="display:none;">0</span>
+                        </button>
+                        <div id="notificationDropdown" style="display: none; position: absolute; right: 0; top: 40px; width: 300px; background: white; border: 1px solid #e9ecef; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.15); z-index: 1000; color: #333; text-align: left;">
+                            <div style="padding: 12px; font-weight: bold; border-bottom: 1px solid #e9ecef; font-size: 0.9rem; background: #f8f9fa; border-radius: 8px 8px 0 0;">Notifications</div>
+                            <div id="notificationList" style="max-height: 280px; overflow-y: auto; font-size: 0.85rem;">
+                                <div style="padding: 15px; text-align: center; color: #888;">No new notifications</div>
+                            </div>
+                        </div>
+                    </div>
                 </div>
             </div>
 
             <div class="content-wrapper">
                 <?= showFlashMessage() ?>
 
-                <!-- Dashboard Overview -->
+                <?php if ($section === 'notifications'): ?>
+                    <div class="page-header">
+                        <h1 class="page-title">Notification Archive</h1>
+                        <p class="page-subtitle">All your academic and security alerts in one place</p>
+                        <a href="?section=dashboard" class="btn btn-sm btn-outline" style="margin-top: 12px;">&#8592; Back to Dashboard</a>
+                    </div>
+
+                    <div class="card">
+                        <div class="card-header">
+                            <span class="card-title">All Notifications History</span>
+                            <?php 
+                            // جلب الأرشيف بالكامل (آخر 100 إشعار)
+                            $allNotifs = $db->query(
+                                "SELECT * FROM notifications 
+                                 WHERE user_id = ? OR role_target = ? 
+                                 ORDER BY created_at DESC LIMIT 100",
+                                [$user['id'], $user['role_name']]
+                            )->fetchAll();
+                            
+                            // تحديث حالة الإشعارات لـ مقروءة فور دخول الصفحة عشان الجرس يصفر علطول
+                            $db->query("UPDATE notifications SET is_read = 1 WHERE user_id = ? OR role_target = ?", [$user['id'], $user['role_name']]);
+                            ?>
+                        </div>
+                        <div class="card-body" style="padding: 0;">
+                            <div class="table-container">
+                                <table class="data-table">
+                                    <thead>
+                                        <tr>
+                                            <th>Status</th>
+                                            <th>Type</th>
+                                            <th>Title</th>
+                                            <th>Message</th>
+                                            <th>Date & Time</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        <?php foreach ($allNotifs as $n): 
+                                            $typeBadge = $n['type'] === 'security' ? 'badge-danger' : 'badge-primary';
+                                            $statusText = $n['is_read'] == 0 ? '<span style="color:#2563eb;">● New</span>' : '<span style="color:#94a3b8;">○ Read</span>';
+                                        ?>
+                                            <tr>
+                                                <td><strong><?= $statusText ?></strong></td>
+                                                <td><span class="badge <?= $typeBadge ?>"><?= htmlspecialchars(ucfirst($n['type'])) ?></span></td>
+                                                <td><strong><?= htmlspecialchars($n['title']) ?></strong></td>
+                                                <td><?= htmlspecialchars($n['message']) ?></td>
+                                                <td><?= htmlspecialchars($n['created_at']) ?></td>
+                                            </tr>
+                                        <?php endforeach; ?>
+                                        <?php if (empty($allNotifs)): ?>
+                                            <tr><td colspan="5" style="text-align:center; color:var(--gray); padding:40px;">Your notification archive is empty.</td></tr>
+                                        <?php endif; ?>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                <?php endif; ?>
+
                 <?php if ($section === 'dashboard'): ?>
                 <div class="page-header">
                     <h1 class="page-title">Dashboard Overview</h1>
@@ -162,7 +230,6 @@ $quizAnalytics = $db->query(
                     </div>
                 </div>
 
-                <!-- Recent Activity -->
                 <div class="card" style="margin-top: 20px;">
                     <div class="card-header">
                         <span class="card-title">My Courses</span>
@@ -180,6 +247,7 @@ $quizAnalytics = $db->query(
                                         $quizCount = $db->query("SELECT COUNT(*) as c FROM quizzes WHERE course_id = ?", [$c['id']])->fetch()['c'];
                                     ?>
                                     <tr>
+                                        $courseGrowthTemp = (int)$c['id'];
                                         <td><strong><?= htmlspecialchars($c['course_code']) ?></strong></td>
                                         <td><?= htmlspecialchars($c['course_name']) ?></td>
                                         <td><?= htmlspecialchars($c['department']) ?></td>
@@ -194,7 +262,6 @@ $quizAnalytics = $db->query(
                 </div>
                 <?php endif; ?>
 
-                <!-- Courses Section -->
                 <?php if ($section === 'courses'): ?>
                 <div class="page-header">
                     <h1 class="page-title">My Courses</h1>
@@ -227,7 +294,6 @@ $quizAnalytics = $db->query(
                 </div>
                 <?php endif; ?>
 
-                <!-- Quiz Builder -->
                 <?php if ($section === 'quizzes'): ?>
                 <div class="page-header">
                     <h1 class="page-title">Quiz Builder</h1>
@@ -270,7 +336,6 @@ $quizAnalytics = $db->query(
                 </div>
                 <?php endif; ?>
 
-                <!-- Quiz Detail / Questions -->
                 <?php if ($section === 'quiz_detail' && isset($_GET['id'])):
                     $quizId = filter_input(INPUT_GET, 'id', FILTER_VALIDATE_INT);
                     $quiz = $db->query("SELECT q.*, c.course_name FROM quizzes q JOIN courses c ON q.course_id = c.id WHERE q.id = ? AND q.created_by = ?", [$quizId, $user['id']])->fetch();
@@ -326,7 +391,6 @@ $quizAnalytics = $db->query(
                 </div>
                 <?php endif; ?>
 
-                <!-- Assignments -->
                 <?php if ($section === 'assignments'): ?>
                 <div class="page-header">
                     <h1 class="page-title">Assignments</h1>
@@ -370,7 +434,6 @@ $quizAnalytics = $db->query(
                 </div>
                 <?php endif; ?>
 
-                <!-- Assignment Submissions -->
                 <?php if ($section === 'assignment_submissions' && isset($_GET['id'])):
                     $assignmentId = filter_input(INPUT_GET, 'id', FILTER_VALIDATE_INT);
                     $assignment = $db->query("SELECT a.*, c.course_name FROM assignments a JOIN courses c ON a.course_id = c.id WHERE a.id = ? AND a.created_by = ?", [$assignmentId, $user['id']])->fetch();
@@ -422,7 +485,6 @@ $quizAnalytics = $db->query(
                 </div>
                 <?php endif; ?>
 
-                <!-- TA Management -->
                 <?php if ($section === 'tas'): ?>
                 <div class="page-header">
                     <h1 class="page-title">Teaching Assistants</h1>
@@ -466,7 +528,6 @@ $quizAnalytics = $db->query(
                 <?php endforeach; ?>
                 <?php endif; ?>
 
-                <!-- Gradebook -->
                 <?php if ($section === 'gradebook'): ?>
                 <div class="page-header">
                     <h1 class="page-title">Gradebook</h1>
@@ -517,7 +578,6 @@ $quizAnalytics = $db->query(
         </div>
     </div>
 
-    <!-- Create Quiz Modal -->
     <div class="modal-overlay" id="createQuizModal">
         <div class="modal">
             <div class="modal-header">
@@ -586,7 +646,6 @@ $quizAnalytics = $db->query(
         </div>
     </div>
 
-    <!-- Add Question Modal -->
     <div class="modal-overlay" id="addQuestionModal">
         <div class="modal">
             <div class="modal-header">
@@ -642,7 +701,6 @@ $quizAnalytics = $db->query(
         </div>
     </div>
 
-    <!-- Create Assignment Modal -->
     <div class="modal-overlay" id="createAssignmentModal">
         <div class="modal">
             <div class="modal-header">
@@ -701,7 +759,6 @@ $quizAnalytics = $db->query(
         </div>
     </div>
 
-    <!-- Grade Submission Modal -->
     <div class="modal-overlay" id="gradeModal">
         <div class="modal" style="max-width: 400px;">
             <div class="modal-header">

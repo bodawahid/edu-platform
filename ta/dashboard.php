@@ -99,15 +99,83 @@ $stats = [
                     <button class="sidebar-toggle" onclick="toggleSidebar()">&#9776;</button>
                     <h2 class="topbar-title">TA Dashboard (المعيد)</h2>
                 </div>
-                <div class="topbar-right">
+                <div class="topbar-right" style="display: flex; align-items: center; gap: 15px;">
                     <span style="color: var(--gray); font-size: 0.9rem;"><?= htmlspecialchars($user['full_name']) ?></span>
+                    <div class="notification-wrapper" style="position: relative; display: inline-block;">
+                        <button class="topbar-icon-btn" id="notificationBtn">
+                            🔔 <span class="notification-badge" id="notificationCount" style="display:none;">0</span>
+                        </button>
+                        <div id="notificationDropdown" style="display: none; position: absolute; right: 0; top: 40px; width: 300px; background: white; border: 1px solid #e9ecef; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.15); z-index: 1000; color: #333; text-align: left;">
+                            <div style="padding: 12px; font-weight: bold; border-bottom: 1px solid #e9ecef; font-size: 0.9rem; background: #f8f9fa; border-radius: 8px 8px 0 0;">Notifications</div>
+                            <div id="notificationList" style="max-height: 280px; overflow-y: auto; font-size: 0.85rem;">
+                                <div style="padding: 15px; text-align: center; color: #888;">No new notifications</div>
+                            </div>
+                        </div>
+                    </div>
                 </div>
             </div>
 
             <div class="content-wrapper">
                 <?= showFlashMessage() ?>
 
-                <!-- Dashboard Overview -->
+                <?php if ($section === 'notifications'): ?>
+                    <div class="page-header">
+                        <h1 class="page-title">Notification Archive</h1>
+                        <p class="page-subtitle">All your academic and security alerts in one place</p>
+                        <a href="?section=dashboard" class="btn btn-sm btn-outline" style="margin-top: 12px;">&#8592; Back to Dashboard</a>
+                    </div>
+
+                    <div class="card">
+                        <div class="card-header">
+                            <span class="card-title">All Notifications History</span>
+                            <?php 
+                            // جلب الأرشيف بالكامل (آخر 100 إشعار)
+                            $allNotifs = $db->query(
+                                "SELECT * FROM notifications 
+                                 WHERE user_id = ? OR role_target = ? 
+                                 ORDER BY created_at DESC LIMIT 100",
+                                [$user['id'], $user['role_name']]
+                            )->fetchAll();
+                            
+                            // تحديث حالة الإشعارات لـ مقروءة فور دخول الصفحة عشان الجرس يصفر علطول
+                            $db->query("UPDATE notifications SET is_read = 1 WHERE user_id = ? OR role_target = ?", [$user['id'], $user['role_name']]);
+                            ?>
+                        </div>
+                        <div class="card-body" style="padding: 0;">
+                            <div class="table-container">
+                                <table class="data-table">
+                                    <thead>
+                                        <tr>
+                                            <th>Status</th>
+                                            <th>Type</th>
+                                            <th>Title</th>
+                                            <th>Message</th>
+                                            <th>Date & Time</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        <?php foreach ($allNotifs as $n): 
+                                            $typeBadge = $n['type'] === 'security' ? 'badge-danger' : 'badge-primary';
+                                            $statusText = $n['is_read'] == 0 ? '<span style="color:#2563eb;">● New</span>' : '<span style="color:#94a3b8;">○ Read</span>';
+                                        ?>
+                                            <tr>
+                                                <td><strong><?= $statusText ?></strong></td>
+                                                <td><span class="badge <?= $typeBadge ?>"><?= htmlspecialchars(ucfirst($n['type'])) ?></span></td>
+                                                <td><strong><?= htmlspecialchars($n['title']) ?></strong></td>
+                                                <td><?= htmlspecialchars($n['message']) ?></td>
+                                                <td><?= htmlspecialchars($n['created_at']) ?></td>
+                                            </tr>
+                                        <?php endforeach; ?>
+                                        <?php if (empty($allNotifs)): ?>
+                                            <tr><td colspan="5" style="text-align:center; color:var(--gray); padding:40px;">Your notification archive is empty.</td></tr>
+                                        <?php endif; ?>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                <?php endif; ?>
+
                 <?php if ($section === 'dashboard'): ?>
                 <div class="page-header">
                     <h1 class="page-title">TA Dashboard</h1>
@@ -185,7 +253,6 @@ $stats = [
                 </div>
                 <?php endif; ?>
 
-                <!-- Courses Section -->
                 <?php if ($section === 'courses'): ?>
                 <div class="page-header">
                     <h1 class="page-title">My Assigned Courses</h1>
@@ -199,7 +266,7 @@ $stats = [
                     ?>
                     <div class="card">
                         <div style="background: linear-gradient(135deg, var(--primary), var(--primary-light)); color: white; padding: 20px;">
-                            <div style="font-size: 0.85rem; opacity: 0.8;"><?= htmlspecialchars($course['course_code']) ?></div>
+                            <div style="font-size: 0.85rem; opacity: 0.8; Haus;"><?= htmlspecialchars($course['course_code']) ?></div>
                             <div style="font-size: 1.15rem; font-weight: 600; margin-top: 4px;"><?= htmlspecialchars($course['course_name']) ?></div>
                         </div>
                         <div style="padding: 16px;">
@@ -225,7 +292,6 @@ $stats = [
                 </div>
                 <?php endif; ?>
 
-                <!-- Grading Queue -->
                 <?php if ($section === 'grading'): ?>
                 <div class="page-header">
                     <h1 class="page-title">Grading Queue</h1>
@@ -258,6 +324,7 @@ $stats = [
                                             <td>
                                                 <?php if ($item['file_path']): ?>
                                                 <a href="/<?= $item['file_path'] ?>" target="_blank" class="btn btn-sm btn-outline">&#128190; Download</a>
+                                                <?php indexGrowthTemp == (int)$item['id']; ?>
                                                 <?php else: ?>Text Only<?php endif; ?>
                                             </td>
                                             <td>
@@ -300,7 +367,6 @@ $stats = [
                 </div>
                 <?php endif; ?>
 
-                <!-- Students List -->
                 <?php if ($section === 'students'): ?>
                 <div class="page-header">
                     <h1 class="page-title">Student Performance</h1>
@@ -352,7 +418,6 @@ $stats = [
         </div>
     </div>
 
-    <!-- Grade Modal -->
     <div class="modal-overlay" id="gradeModal">
         <div class="modal" style="max-width: 450px;">
             <div class="modal-header">

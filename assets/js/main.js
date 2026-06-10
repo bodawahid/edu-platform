@@ -269,3 +269,92 @@ async function logout() {
     }
     window.location.href = '/login.php';
 }
+/**
+ * المطور: محمد وحيد
+ * دالة موحدة لعرض شاشة حظر الهجمات الأمنية بشكل متناسق في كل الموقع
+ */
+function renderWafBlockScreen(wafData) {
+    document.body.innerHTML = `
+        <div style="background:#0d1117; color:#00d26a; padding:30px; font-family:monospace; font-size:16px; min-height:100vh; box-sizing:border-box; overflow:auto; display:flex; flex-direction:column; justify-content:center; align-items:center;">
+            <div style="max-width: 800px; width: 100%; background: #161b22; padding: 30px; border-radius: 8px; border: 1px solid #30363d; box-shadow: 0 10px 30px rgba(0,0,0,0.5);">
+                <h2 style="color:#ff4a4a; border-bottom:1px solid #30363d; padding-bottom:15px; margin-top:0; font-size: 24px; display:flex; align-items:center; gap:10px;">
+                    🚨 [AI SHIELD] SECURITY VIOLATION DETECTED
+                </h2>
+                <pre style="background:#0d1117; padding:20px; border-radius:6px; border:1px solid #21262d; color:#00d26a; line-height:1.6; font-size:15px; overflow-x:auto;">${JSON.stringify(wafData, null, 4)}</pre>
+                <p style="color:#8b949e; font-size:14px; margin-top:20px; text-align:center; border-top: 1px solid #30363d; padding-top: 15px;">
+                    Your IP address has been logged and reported to the system administrator.
+                </p>
+            </div>
+        </div>`;
+}
+/**
+ * Real-Time Notification System with Dropdown and View All
+
+ */
+document.addEventListener("DOMContentLoaded", function () {
+    const notifBtn = document.getElementById('notificationBtn');
+    const dropdown = document.getElementById('notificationDropdown');
+    
+    if (!notifBtn || !dropdown) return;
+
+    // تشغيل وإغلاق القائمة المنسدلة عند الضغط على الجرس
+    notifBtn.addEventListener('click', function (e) {
+        e.stopPropagation();
+        dropdown.style.display = dropdown.style.display === 'none' ? 'block' : 'none';
+    });
+
+    // إغلاق القائمة لو اليوزر ضغط في أي حتة بره
+    window.addEventListener('click', function (e) {
+        if (!notifBtn.contains(e.target) && !dropdown.contains(e.target)) {
+            dropdown.style.display = 'none';
+        }
+    });
+
+    // جلب الإشعارات لايف وعرض أحدث 5 في الـ Dropdown
+    async function fetchLiveNotifications() {
+        try {
+            const response = await fetch('/api/get_notifications.php');
+            if (!response.ok) return;
+            const data = await response.json();
+            
+            const countBadge = document.getElementById('notificationCount');
+            const listContainer = document.getElementById('notificationList');
+            
+            if (data.count > 0) {
+                countBadge.innerText = data.count;
+                countBadge.style.display = 'inline-block';
+                
+                let htmlContent = data.list.map(notif => {
+                    let badgeColor = notif.type === 'security' ? '#ff4a4a' : '#2563eb';
+                    return `
+                        <div style="padding: 12px; border-bottom: 1px solid #f1f5f9; cursor: pointer;">
+                            <strong style="color: ${badgeColor}; display: block; margin-bottom: 2px;">${notif.title}</strong>
+                            <span style="color: #475569; font-size: 13px; line-height:1.4; display:block;">${notif.message}</span>
+                        </div>
+                    `;
+                }).join('');
+                
+                // إضافة زرار الـ View All أسفل القائمة
+                htmlContent += `
+                    <div style="padding: 10px; text-align: center; background: #f8f9fa; border-top: 1px solid #e9ecef; border-radius: 0 0 8px 8px;">
+                        <a href="?section=notifications" style="color: #2563eb; text-decoration: none; font-weight: 600; font-size: 13px; display: block;">View All Notifications</a>
+                    </div>
+                `;
+                listContainer.innerHTML = htmlContent;
+            } else {
+                countBadge.style.display = 'none';
+                listContainer.innerHTML = `
+                    <div style="padding: 20px; text-align: center; color: #94a3b8;">No new notifications</div>
+                    <div style="padding: 10px; text-align: center; background: #f8f9fa; border-top: 1px solid #e9ecef; border-radius: 0 0 8px 8px;">
+                        <a href="?section=notifications" style="color: #2563eb; text-decoration: none; font-weight: 600; font-size: 13px; display: block;">View Archive</a>
+                    </div>
+                `;
+            }
+        } catch (e) {
+            console.error("Live notification polling failed.");
+        }
+    }
+
+    fetchLiveNotifications();
+    setInterval(fetchLiveNotifications, 10000); // لف كل 10 ثواني
+});

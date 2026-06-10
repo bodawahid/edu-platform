@@ -145,15 +145,85 @@ if ($section === 'take_quiz' && isset($_GET['id'])) {
                     <button class="sidebar-toggle" onclick="toggleSidebar()">&#9776;</button>
                     <h2 class="topbar-title">Student Dashboard</h2>
                 </div>
-                <div class="topbar-right">
+                <div class="topbar-right" style="display: flex; align-items: center; gap: 15px;">
                     <span style="color: var(--gray); font-size: 0.9rem;"><?= htmlspecialchars($user['full_name']) ?></span>
+                    <div class="notification-wrapper" style="position: relative; display: inline-block;">
+                        <button class="topbar-icon-btn" id="notificationBtn">
+                            🔔 <span class="notification-badge" id="notificationCount" style="display:none;">0</span>
+                        </button>
+                        <div id="notificationDropdown" style="display: none; position: absolute; right: 0; top: 40px; width: 300px; background: white; border: 1px solid #e9ecef; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.15); z-index: 1000; color: #333; text-align: left;">
+                            <div style="padding: 12px; font-weight: bold; border-bottom: 1px solid #e9ecef; font-size: 0.9rem; background: #f8f9fa; border-radius: 8px 8px 0 0;">Notifications</div>
+                            <div id="notificationList" style="max-height: 280px; overflow-y: auto; font-size: 0.85rem;">
+                                <div style="padding: 15px; text-align: center; color: #888;">No new notifications</div>
+                            </div>
+                        </div>
+                    </div>
                 </div>
             </div>
 
             <div class="content-wrapper">
                 <?= showFlashMessage() ?>
 
-                <!-- Dashboard Overview -->
+                <?php if ($section === 'notifications'): ?>
+                    <div class="page-header">
+                        <h1 class="page-title">Notification Archive</h1>
+                        <p class="page-subtitle">All your academic and security alerts in one place</p>
+                        <a href="?section=dashboard" class="btn btn-sm btn-outline" style="margin-top: 12px;">&#8592; Back to Dashboard</a>
+                    </div>
+
+                    <div class="card">
+                        <div class="card-header">
+                            <span class="card-title">All Notifications History</span>
+                            <?php 
+                            $allNotifs = $db->query(
+                                "SELECT * FROM notifications 
+                                 WHERE user_id = ? OR role_target = ? 
+                                 ORDER BY created_at DESC LIMIT 100",
+                                [$user['id'], $user['role_name']]
+                            )->fetchAll();
+                            
+                            $db->query("UPDATE notifications SET is_read = 1 WHERE user_id = ? OR role_target = ?", [$user['id'], $user['role_name']]);
+                            ?>
+                        </div>
+                        <div class="card-body" style="padding: 0;">
+                            <div class="table-container">
+                                <table class="data-table">
+                                    <thead>
+                                        <tr>
+                                            <th>Status</th>
+                                            <th>Type</th>
+                                            <th>Title</th>
+                                            <th>Message</th>
+                                            <th>Date & Time</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        <?php foreach ($allNotifs as $n): 
+                                            $typeBadge = $n['type'] === 'security' ? 'badge-danger' : 'badge-primary';
+                                            $statusText = $n['is_read'] == 0 ? '<span style="color:#2563eb;">● New</span>' : '<span style="color:#94a3b8;">○ Read</span>';
+                                        ?>
+                                            <tr>
+                                                <td><strong><?= $statusText ?></strong></td>
+                                                <td><span class="badge <?= $typeBadge ?>"><?= htmlspecialchars(ucfirst($n['type'])) ?></span></td>
+                                                <td><strong><?= htmlspecialchars($n['title']) ?></strong></td>
+                                                <td><?= htmlspecialchars($n['message']) ?></td>
+                                                <td><?= htmlspecialchars($n['created_at']) ?></td>
+                                            </tr>
+                                        <?php endforeach; ?>
+                                        <?php if (empty($allNotifs)): ?>
+                                            <tr><td colspan="5" style="text-align:center; color:var(--gray); padding:40px;">Your notification archive is empty.</td></tr>
+                                        <?php endif; ?>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                <?php 
+                    echo "</div></div></div><script src='/assets/js/main.js'></script></body></html>";
+                    exit; 
+                endif; 
+                ?>
+
                 <?php if ($section === 'dashboard'): ?>
                 <div class="page-header">
                     <h1 class="page-title">My Dashboard</h1>
@@ -179,7 +249,6 @@ if ($section === 'take_quiz' && isset($_GET['id'])) {
                     </div>
                 </div>
 
-                <!-- To-Do List -->
                 <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px;">
                     <div class="card">
                         <div class="card-header">
@@ -236,7 +305,6 @@ if ($section === 'take_quiz' && isset($_GET['id'])) {
                     </div>
                 </div>
 
-                <!-- Recent Grades Preview -->
                 <div class="card" style="margin-top: 20px;">
                     <div class="card-header">
                         <span class="card-title">Recent Grades</span>
@@ -269,7 +337,6 @@ if ($section === 'take_quiz' && isset($_GET['id'])) {
                 </div>
                 <?php endif; ?>
 
-                <!-- Courses -->
                 <?php if ($section === 'courses'): ?>
                 <div class="page-header">
                     <h1 class="page-title">My Courses</h1>
@@ -304,7 +371,6 @@ if ($section === 'take_quiz' && isset($_GET['id'])) {
                 </div>
                 <?php endif; ?>
 
-                <!-- To-Do List -->
                 <?php if ($section === 'todo'): ?>
                 <div class="page-header">
                     <h1 class="page-title">Academic To-Do List</h1>
@@ -324,7 +390,7 @@ if ($section === 'take_quiz' && isset($_GET['id'])) {
                                         $deadline = getDeadlineStatus($q['end_time']);
                                     ?>
                                     <tr>
-                                        <td><strong><?= htmlspecialchars($q['title']) ?></strong></td>
+                                        <td>open<strong><?= htmlspecialchars($q['title']) ?></strong></td>
                                         <td><?= htmlspecialchars($q['course_code']) ?></td>
                                         <td><?= $q['duration_minutes'] ?> min</td>
                                         <td><span class="deadline-badge deadline-<?= $deadline['class'] ?>"><?= $deadline['text'] ?></span></td>
@@ -391,10 +457,8 @@ if ($section === 'take_quiz' && isset($_GET['id'])) {
                 </div>
                 <?php endif; ?>
 
-                <!-- Take Quiz -->
                 <?php if ($section === 'take_quiz' && $quizDetail): ?>
                 <?php
-                // Check if already attempted
                 $existingAttempt = $db->query(
                     "SELECT id, status FROM quiz_attempts WHERE quiz_id = ? AND student_id = ? AND status = 'in_progress'",
                     [$quizDetail['id'], $user['id']]
@@ -463,21 +527,16 @@ if ($section === 'take_quiz' && isset($_GET['id'])) {
                     const durationMinutes = <?= $quizDetail['duration_minutes'] ?>;
                     const timerDisplay = document.getElementById('quizTimer');
                     const quizTimer = new QuizTimer(durationMinutes, timerDisplay, function() {
-                        // Auto-submit when time expires
                         submitQuizAnswers(true);
                     });
 
-                    // Start timer immediately
                     quizTimer.start();
 
-                    // Also start attempt on server
                     fetch('/api/quizzes.php', {
                         method: 'POST',
-                        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
                         body: 'action=start_attempt&quiz_id=<?= $quizDetail['id'] ?>&csrf_token=' + document.querySelector('input[name="csrf_token"]').value
                     });
 
-                    // Handle form submission
                     document.getElementById('quizForm').addEventListener('submit', function(e) {
                         e.preventDefault();
                         if (confirm('Are you sure you want to submit? You cannot change your answers after submission.')) {
@@ -528,7 +587,6 @@ if ($section === 'take_quiz' && isset($_GET['id'])) {
                 })();
 
                 function selectOption(el) {
-                    // Remove selected from siblings
                     el.parentElement.querySelectorAll('.option-item').forEach(opt => opt.classList.remove('selected'));
                     el.classList.add('selected');
                 }
@@ -536,53 +594,8 @@ if ($section === 'take_quiz' && isset($_GET['id'])) {
                 <?php endif; ?>
                 <?php endif; ?>
 
-                <!-- Quizzes List -->
-                <?php if ($section === 'quizzes'): ?>
-                <div class="page-header">
-                    <h1 class="page-title">Available Quizzes</h1>
-                    <p class="page-subtitle">Quizzes you can take now</p>
-                </div>
-
-                <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 20px;">
-                    <?php foreach ($availableQuizzes as $q):
-                        $deadline = getDeadlineStatus($q['end_time']);
-                    ?>
-                    <div class="card">
-                        <div style="padding: 20px;">
-                            <div style="display: flex; justify-content: space-between; align-items: start; margin-bottom: 12px;">
-                                <span class="badge badge-primary"><?= htmlspecialchars($q['course_code']) ?></span>
-                                <?php if ($q['has_attempted']): ?>
-                                <span class="badge badge-success">Completed</span>
-                                <?php endif; ?>
-                            </div>
-                            <h3 style="font-size: 1.1rem; margin-bottom: 8px;"><?= htmlspecialchars($q['title']) ?></h3>
-                            <p style="color: var(--gray); font-size: 0.85rem; margin-bottom: 12px;"><?= $q['duration_minutes'] ?> min &middot; <?= $q['total_marks'] ?> marks</p>
-                            <span class="deadline-badge deadline-<?= $deadline['class'] ?>"><?= $deadline['text'] ?></span>
-                            <div style="margin-top: 16px;">
-                                <?php if (!$q['has_attempted']): ?>
-                                <a href="?section=take_quiz&id=<?= $q['id'] ?>" class="btn btn-primary" style="width: 100%;">Take Quiz</a>
-                                <?php else: ?>
-                                <button class="btn btn-outline" style="width: 100%;" disabled>Already Taken</button>
-                                <?php endif; ?>
-                            </div>
-                        </div>
-                    </div>
-                    <?php endforeach; ?>
-                    <?php if (empty($availableQuizzes)): ?>
-                    <div class="card" style="grid-column: 1 / -1; text-align: center; padding: 60px;">
-                        <div style="font-size: 3rem; margin-bottom: 16px;">&#128218;</div>
-                        <h3 style="color: var(--gray);">No quizzes available right now</h3>
-                        <p style="color: var(--gray);">Check back later for new quizzes.</p>
-                    </div>
-                    <?php endif; ?>
-                </div>
-                <?php endif; ?>
-
-                <!-- Assignments -->
-                <?php if ($section === 'assignments'): ?>
+                <?php if ($section === 'assignments' && isset($_GET['id'])): ?>
                 <?php
-                // Specific assignment submission page
-                if (isset($_GET['id'])):
                     $assignmentId = filter_input(INPUT_GET, 'id', FILTER_VALIDATE_INT);
                     $assignment = $db->query(
                         "SELECT a.*, c.course_code, c.course_name FROM assignments a
@@ -590,7 +603,6 @@ if ($section === 'take_quiz' && isset($_GET['id'])) {
                         [$assignmentId]
                     )->fetch();
 
-                    // Check if already submitted
                     $existingSub = $db->query(
                         "SELECT * FROM assignment_submissions WHERE assignment_id = ? AND student_id = ?",
                         [$assignmentId, $user['id']]
@@ -687,9 +699,7 @@ if ($section === 'take_quiz' && isset($_GET['id'])) {
                 });
                 </script>
                 <?php endif; ?>
-                <?php endif; ?>
 
-                <!-- Grades Portal -->
                 <?php if ($section === 'grades'): ?>
                 <div class="page-header">
                     <h1 class="page-title">My Grades</h1>

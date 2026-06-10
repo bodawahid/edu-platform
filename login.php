@@ -105,6 +105,7 @@ if (isLoggedIn()) {
     </div>
 
     <script src="/assets/js/main.js"></script>
+    <script src="/assets/js/main.js"></script>
     <script>
     async function handleLogin(e) {
         e.preventDefault();
@@ -135,20 +136,27 @@ if (isLoggedIn()) {
                 body: formData
             });
 
+            // 1. لو الـ WAF قفش أتاك (Status 403) - هنا بس نفرتك الصفحة
+            if (response.status === 403) {
+                const htmlResult = await response.text();
+                document.body.innerHTML = htmlResult;
+                return false;
+            }
+
+            // 2. قراءة الـ JSON في كل الحالات التانية
             const data = await response.json();
 
             if (data.success) {
                 alert.innerHTML = '<div class="alert alert-success"><span class="alert-icon">✓</span> Login successful! Redirecting...</div>';
-                setTimeout(() => {
-                    window.location.href = data.redirect;
-                }, 500);
+                setTimeout(() => { window.location.href = data.redirect; }, 500);
             } else {
-                alert.innerHTML = '<div class="alert alert-error"><span class="alert-icon">✗</span> ' + (data.message || 'Login failed.') + '</div>';
+                // 3. هنا بقى الرسالة الحمراء هتظهر جوه الـ div بتاعنا من غير ما الصفحة تتغير
+                alert.innerHTML = '<div class="alert alert-error"><span class="alert-icon">✗</span> ' + (data.message || 'Invalid username or password.') + '</div>';
                 btn.disabled = false;
                 btn.innerHTML = 'Sign In';
             }
         } catch (error) {
-            alert.innerHTML = '<div class="alert alert-error"><span class="alert-icon">✗</span> An error occurred. Please try again.</div>';
+            alert.innerHTML = '<div class="alert alert-error"><span class="alert-icon">✗</span> Connection error. Please try again.</div>';
             btn.disabled = false;
             btn.innerHTML = 'Sign In';
         }

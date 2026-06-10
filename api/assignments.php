@@ -8,7 +8,7 @@ require_once __DIR__ . '/../includes/functions.php';
 header('Content-Type: application/json; charset=utf-8');
 
 $user = getCurrentUser();
-if (!$user || !in_array($user['role_name'], ['admin', 'doctor', 'ta'])) {
+if (!$user || !in_array($user['role_name'], ['admin', 'doctor', 'ta', 'student'])) {
     jsonResponse(['success' => false, 'message' => 'Access denied.'], 403);
 }
 
@@ -51,6 +51,10 @@ try {
 
             $newId = $db->lastInsertId();
             logActivity('assignment_created', 'assignment', $newId, "Created assignment: $title");
+            
+            // 🚨 1️⃣ إشعار للطلبة: شيت أو واجب جديد نزل
+            addNotification(null, 'student', 'assignment', '📚 New Assignment Posted', "A new assignment has been uploaded: \"{$title}\". Check the deadline.");
+
             jsonResponse(['success' => true, 'message' => 'Assignment created successfully.', 'id' => $newId]);
             break;
 
@@ -82,7 +86,7 @@ try {
             }
 
             // Check if late
-            $assignment = $db->query("SELECT deadline, late_submission_allowed FROM assignments WHERE id = ?", [$assignmentId])->fetch();
+            $assignment = $db->query("SELECT title, deadline, created_by, late_submission_allowed FROM assignments WHERE id = ?", [$assignmentId])->fetch();
             $isLate = false;
             if ($assignment) {
                 $isLate = strtotime('now') > strtotime($assignment['deadline']);
@@ -94,7 +98,6 @@ try {
             // Check if already submitted
             $existing = $db->query("SELECT id FROM assignment_submissions WHERE assignment_id = ? AND student_id = ?", [$assignmentId, $user['id']])->fetch();
             if ($existing) {
-                // Update existing submission
                 $db->query(
                     "UPDATE assignment_submissions SET submission_text = ?, file_name = ?, file_path = ?, file_size = ?, file_type = ?, is_late = ?, submitted_at = NOW() WHERE id = ?",
                     [$submissionText, $fileData['file_name'], $fileData['file_path'], $fileData['file_size'], $fileData['file_type'], $isLate ? 1 : 0, $existing['id']]
@@ -110,6 +113,14 @@ try {
             }
 
             logActivity('assignment_submitted', 'assignment_submission', $subId, "Submitted assignment $assignmentId");
+            
+            // 🚨 2️⃣ إشعار للدكتور: طالب رفع حل الشيت
+            $studentName = htmlspecialchars($user['username'] ?? 'A student');
+            $assignTitle = htmlspecialchars($assignment['title'] ?? 'Assignment');
+            $instructorId = $assignment['created_by'] ?? null;
+            
+            addNotification($instructorId, 'doctor', 'assignment_submission', '📤 Assignment Submitted', "Student ({$studentName}) uploaded a solution for \"{$assignTitle}\".");
+
             jsonResponse(['success' => true, 'message' => 'Assignment submitted successfully!' . ($isLate ? ' (Late submission)' : '')]);
             break;
 
@@ -132,6 +143,24 @@ try {
             );
 
             logActivity('assignment_graded', 'assignment_submission', $submissionId, "Graded submission $submissionId with $marks marks");
+            
+            // جلب الـ student_id واسم الشيت عشان نوجه الإشعار للطالب الصاحب الشيت
+            $submissionData = $db->query(
+                "SELECT s.student_id, a.title 
+                 FROM assignment_submissions s 
+                 JOIN assignments a ON s.assignment_id = a.id 
+                 WHERE s.id = ?", 
+                [$submissionId]
+            )->fetch();
+
+            if ($submissionData) {
+                $targetStudentId = $submissionData['student_id'];
+                $assignTitle = htmlspecialchars($submissionData['title'] ?? 'Assignment');
+                
+                // 🚨 3️⃣ إشعار موجه للطالب: واجبك اتصحح والدرجة ظهرت
+                addNotification($targetStudentId, 'student', 'assignment_graded', '📊 Assignment Graded', "Your submission for \"{$assignTitle}\" has been graded. Marks: {$marks}");
+            }
+
             jsonResponse(['success' => true, 'message' => 'Grade submitted successfully.']);
             break;
 

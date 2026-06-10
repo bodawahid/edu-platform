@@ -1,23 +1,23 @@
 <?php
 /**
- * Users API - CRUD Operations
+ * Users API - CRUD Operations with Root Admin Protection
+ * المطور: محمد وحيد - هندسة شبرا
  */
 
 require_once __DIR__ . '/../includes/functions.php';
 
 header('Content-Type: application/json; charset=utf-8');
 
-// Check admin access
 $user = getCurrentUser();
+// حماية أمنية: يمنع دخول أي شخص غير الأدمن لإدارة المستخدمين
 if (!$user || $user['role_name'] !== 'admin') {
-    jsonResponse(['success' => false, 'message' => 'Access denied.'], 403);
+    jsonResponse(['success' => false, 'message' => 'Access denied. Unauthorized.'], 403);
 }
 
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
     jsonResponse(['success' => false, 'message' => 'Invalid request method.'], 405);
 }
 
-// Validate CSRF
 if (!validateCSRFToken($_POST['csrf_token'] ?? '')) {
     jsonResponse(['success' => false, 'message' => 'Invalid CSRF token.'], 403);
 }
@@ -28,106 +28,99 @@ $db = Database::getInstance();
 try {
     switch ($action) {
         case 'create':
-            $fullName = sanitizeInput($_POST['full_name'] ?? '', 'string');
-            $username = sanitizeInput($_POST['username'] ?? '', 'string');
-            $email = sanitizeInput($_POST['email'] ?? '', 'email');
-            $password = $_POST['password'] ?? '';
+            if (empty($_POST['full_name']) || empty($_POST['username']) || empty($_POST['email']) || empty($_POST['password']) || empty($_POST['role_id'])) {
+                jsonResponse(['success' => false, 'message' => 'Please fill in all required fields (*)'], 400);
+            }
+
+            $username = sanitizeInput($_POST['username'], 'string');
+            $email = filter_var($_POST['email'], FILTER_VALIDATE_EMAIL);
+            $fullName = sanitizeInput($_POST['full_name'], 'string');
+            $password = password_hash($_POST['password'], PASSWORD_BCRYPT);
             $roleId = filter_input(INPUT_POST, 'role_id', FILTER_VALIDATE_INT);
             $department = sanitizeInput($_POST['department'] ?? '', 'string');
 
-            $errors = validateRequired(['full_name', 'username', 'email', 'password'], $_POST);
-            if (!empty($errors)) {
-                jsonResponse(['success' => false, 'message' => implode(' ', $errors)], 400);
+            if (!$email) {
+                jsonResponse(['success' => false, 'message' => 'Invalid email address format.'], 400);
             }
 
-            if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
-                jsonResponse(['success' => false, 'message' => 'Invalid email address.'], 400);
-            }
-
-            // Check for existing username/email
+            // فحص تكرار اليوزر أو الإيميل
             $existing = $db->query("SELECT id FROM users WHERE username = ? OR email = ?", [$username, $email])->fetch();
             if ($existing) {
-                jsonResponse(['success' => false, 'message' => 'Username or email already exists.'], 409);
+                jsonResponse(['success' => false, 'message' => 'Username or Email already exists in the system.'], 409);
             }
 
-            $passwordHash = password_hash($password, PASSWORD_BCRYPT);
-
+            // 🚨 الاستعلام مطابق للداتا بيز بالظبط (password_hash و is_active)
             $db->query(
-                "INSERT INTO users (username, email, password_hash, full_name, role_id, department) VALUES (?, ?, ?, ?, ?, ?)",
-                [$username, $email, $passwordHash, $fullName, $roleId, $department]
+                "INSERT INTO users (username, email, password_hash, full_name, role_id, department, is_active) VALUES (?, ?, ?, ?, ?, ?, 1)",
+                [$username, $email, $password, $fullName, $roleId, $department]
             );
 
-            $newId = $db->lastInsertId();
-            logActivity('user_created', 'user', $newId, "Admin created user: $username");
+            logActivity('user_created', 'user', $db->lastInsertId(), "Created user: $username");
+            jsonResponse(['success' => true, 'message' => 'User created successfully!']);
+            break;
 
-            jsonResponse(['success' => true, 'message' => 'User created successfully.', 'id' => $newId]);
+        case 'get_user':
+            $id = filter_input(INPUT_POST, 'id', FILTER_VALIDATE_INT);
+            if (!$id) jsonResponse(['success' => false, 'message' => 'Invalid User ID.'], 400);
+
+            // جلب البيانات مع مطابقة اسم الحقل
+            $targetUser = $db->query("SELECT id, username, email, full_name, role_id, department, is_active FROM users WHERE id = ?", [$id])->fetch();
+            if (!$targetUser) jsonResponse(['success' => false, 'message' => 'User not found.'], 404);
+
+            jsonResponse(['success' => true, 'user' => $targetUser]);
             break;
 
         case 'update':
             $id = filter_input(INPUT_POST, 'id', FILTER_VALIDATE_INT);
-            if (!$id) {
-                jsonResponse(['success' => false, 'message' => 'Invalid user ID.'], 400);
+            if (!$id) jsonResponse(['success' => false, 'message' => 'Invalid User ID.'], 400);
+
+            // 🚨 حماية الأدمن رقم 1 (محمد وحيد)
+            if ($id == 1 && $user['id'] != 1) {
+                jsonResponse(['success' => false, 'message' => 'Security Error: You do not have permissions to modify the Root Administrator account.'], 403);
             }
 
-            $fields = [];
-            $params = [];
+            $fullName = sanitizeInput($_POST['full_name'] ?? '', 'string');
+            $roleId = filter_input(INPUT_POST, 'role_id', FILTER_VALIDATE_INT);
+            $department = sanitizeInput($_POST['department'] ?? '', 'string');
+            $isActive = isset($_POST['is_active']) ? (int)$_POST['is_active'] : 1;
 
-            if (!empty($_POST['full_name'])) {
-                $fields[] = "full_name = ?";
-                $params[] = sanitizeInput($_POST['full_name'], 'string');
+            if ($id == 1) {
+                $roleId = 1; 
+                $isActive = 1;
             }
-            if (!empty($_POST['email'])) {
-                $fields[] = "email = ?";
-                $params[] = sanitizeInput($_POST['email'], 'email');
-            }
-            if (!empty($_POST['department'])) {
-                $fields[] = "department = ?";
-                $params[] = sanitizeInput($_POST['department'], 'string');
-            }
-            if (isset($_POST['role_id'])) {
-                $fields[] = "role_id = ?";
-                $params[] = filter_input(INPUT_POST, 'role_id', FILTER_VALIDATE_INT);
-            }
-            if (isset($_POST['is_active'])) {
-                $fields[] = "is_active = ?";
-                $params[] = filter_input(INPUT_POST, 'is_active', FILTER_VALIDATE_INT) ? 1 : 0;
-            }
+
+            $db->query(
+                "UPDATE users SET full_name = ?, role_id = ?, department = ?, is_active = ? WHERE id = ?",
+                [$fullName, $roleId, $department, $isActive, $id]
+            );
+
+            // تعديل الباسورد لو اتكتب في الحقل الاختياري مع الحقل الصحيح password_hash
             if (!empty($_POST['password'])) {
-                $fields[] = "password_hash = ?";
-                $params[] = password_hash($_POST['password'], PASSWORD_BCRYPT);
+                $newPass = password_hash($_POST['password'], PASSWORD_BCRYPT);
+                $db->query("UPDATE users SET password_hash = ? WHERE id = ?", [$newPass, $id]);
             }
 
-            if (empty($fields)) {
-                jsonResponse(['success' => false, 'message' => 'No fields to update.'], 400);
-            }
-
-            $params[] = $id;
-            $db->query("UPDATE users SET " . implode(', ', $fields) . " WHERE id = ?", $params);
-
-            logActivity('user_updated', 'user', $id, "Admin updated user ID: $id");
-            jsonResponse(['success' => true, 'message' => 'User updated successfully.']);
+            logActivity('user_updated', 'user', $id, "Updated user ID: $id");
+            jsonResponse(['success' => true, 'message' => 'User updated successfully!']);
             break;
 
         case 'delete':
             $id = filter_input(INPUT_POST, 'id', FILTER_VALIDATE_INT);
-            if (!$id) {
-                jsonResponse(['success' => false, 'message' => 'Invalid user ID.'], 400);
-            }
+            if (!$id) jsonResponse(['success' => false, 'message' => 'Invalid User ID.'], 400);
 
-            if ($id == $user['id']) {
-                jsonResponse(['success' => false, 'message' => 'Cannot delete yourself.'], 400);
+            if ($id == 1) {
+                jsonResponse(['success' => false, 'message' => 'Critical Protection: Root Administrator account cannot be deactivated.'], 403);
             }
 
             $db->query("UPDATE users SET is_active = 0 WHERE id = ?", [$id]);
-            logActivity('user_deleted', 'user', $id, "Admin deactivated user ID: $id");
-
-            jsonResponse(['success' => true, 'message' => 'User deactivated successfully.']);
+            logActivity('user_suspended', 'user', $id, "Deactivated user ID: $id");
+            jsonResponse(['success' => true, 'message' => 'User account deactivated successfully.']);
             break;
 
         default:
             jsonResponse(['success' => false, 'message' => 'Unknown action.'], 400);
     }
 } catch (Exception $e) {
-    error_log("User API error: " . $e->getMessage());
-    jsonResponse(['success' => false, 'message' => 'An error occurred.'], 500);
+    error_log("Users API error: " . $e->getMessage());
+    jsonResponse(['success' => false, 'message' => 'An error occurred during execution: ' . $e->getMessage()], 500);
 }

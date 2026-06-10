@@ -9,7 +9,11 @@ header('Content-Type: application/json; charset=utf-8');
 
 $user = getCurrentUser();
 if (!$user || !in_array($user['role_name'], ['admin', 'doctor'])) {
-    jsonResponse(['success' => false, 'message' => 'Access denied.'], 403);
+    // استثناء حالة الـ submit_attempt والـ start_attempt لأن الطالب هو اللي بينادي عليهم
+    $action = $_POST['action'] ?? '';
+    if (!in_array($action, ['submit_attempt', 'start_attempt'], true)) {
+        jsonResponse(['success' => false, 'message' => 'Access denied.'], 403);
+    }
 }
 
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
@@ -48,6 +52,10 @@ try {
 
             $newId = $db->lastInsertId();
             logActivity('quiz_created', 'quiz', $newId, "Created quiz: $title");
+            
+            // 🚨 1️⃣ إشعار للطلبة: الدكتور نزل كويز جديد
+            addNotification(null, 'student', 'quiz', '📝 New Quiz Added', "Dr. posted a new quiz: \"{$title}\". Check your schedule.");
+
             jsonResponse(['success' => true, 'message' => 'Quiz created successfully.', 'id' => $newId]);
             break;
 
@@ -63,7 +71,6 @@ try {
                 jsonResponse(['success' => false, 'message' => 'Quiz ID and question text are required.'], 400);
             }
 
-            // Determine correct answer
             $correctAnswer = '';
             if ($questionType === 'true_false') {
                 $correctAnswer = $correctOption === 0 ? 'True' : 'False';
@@ -79,7 +86,6 @@ try {
 
             $questionId = $db->lastInsertId();
 
-            // Add options for MCQ
             if ($questionType === 'mcq') {
                 foreach ($options as $idx => $optText) {
                     if (!empty($optText)) {
@@ -91,7 +97,6 @@ try {
                     }
                 }
             } else {
-                // Add True/False options
                 $db->query("INSERT INTO question_options (question_id, option_text, is_correct, option_order) VALUES (?, 'True', ?, 0)", [$questionId, $correctOption == 0 ? 1 : 0]);
                 $db->query("INSERT INTO question_options (question_id, option_text, is_correct, option_order) VALUES (?, 'False', ?, 1)", [$questionId, $correctOption == 1 ? 1 : 0]);
             }
@@ -130,14 +135,12 @@ try {
             break;
 
         case 'submit_attempt':
-            // Student submitting quiz answers
             $quizId = filter_input(INPUT_POST, 'quiz_id', FILTER_VALIDATE_INT);
             $answers = $_POST['answers'] ?? [];
             $timeRemaining = filter_input(INPUT_POST, 'time_remaining', FILTER_VALIDATE_INT);
 
             if (!$quizId) jsonResponse(['success' => false, 'message' => 'Quiz ID required.'], 400);
 
-            // Create or update attempt
             $attempt = $db->query("SELECT id FROM quiz_attempts WHERE quiz_id = ? AND student_id = ? AND status = 'in_progress'", [$quizId, $user['id']])->fetch();
 
             if ($attempt) {
@@ -150,7 +153,6 @@ try {
                 $attemptId = $db->lastInsertId();
             }
 
-            // Save answers
             $totalScore = 0;
             foreach ($answers as $questionId => $selectedAnswer) {
                 $question = $db->query("SELECT correct_answer, marks FROM questions WHERE id = ?", [$questionId])->fetch();
@@ -168,11 +170,9 @@ try {
                 }
             }
 
-            // Calculate percentage
-            $quiz = $db->query("SELECT total_marks FROM quizzes WHERE id = ?", [$quizId])->fetch();
+            $quiz = $db->query("SELECT title, created_by, total_marks FROM quizzes WHERE id = ?", [$quizId])->fetch();
             $percentage = $quiz['total_marks'] > 0 ? ($totalScore / $quiz['total_marks']) * 100 : 0;
 
-            // Update attempt
             $status = $timeRemaining !== null && $timeRemaining <= 0 ? 'auto_submitted' : 'submitted';
             $db->query(
                 "UPDATE quiz_attempts SET score = ?, percentage = ?, status = ?, submitted_at = NOW(), time_remaining_seconds = ? WHERE id = ?",
@@ -180,6 +180,15 @@ try {
             );
 
             logActivity('quiz_submitted', 'quiz_attempt', $attemptId, "Submitted quiz $quizId with score $totalScore");
+            
+            // 🚨 2️⃣ إشعار للدكتور: فيه طالب سلم الكويز بتاعه
+            $studentName = htmlspecialchars($user['username'] ?? 'A student');
+            $quizTitle = htmlspecialchars($quiz['title'] ?? 'Quiz');
+            $instructorId = $quiz['created_by'] ?? null;
+            
+            // بنبعته لـ ID الدكتور المعين اللي عمل الكويز، والـ Target بتاعه 'doctor'
+            addNotification($instructorId, 'doctor', 'quiz_submission', '🎓 Quiz Attempt Submitted', "Student ({$studentName}) submitted \"{$quizTitle}\". Score: {$totalScore}");
+
             jsonResponse(['success' => true, 'message' => 'Quiz submitted!', 'score' => $totalScore, 'percentage' => round($percentage, 2)]);
             break;
 
@@ -187,7 +196,6 @@ try {
             $quizId = filter_input(INPUT_POST, 'quiz_id', FILTER_VALIDATE_INT);
             if (!$quizId) jsonResponse(['success' => false, 'message' => 'Quiz ID required.'], 400);
 
-            // Check if already has in-progress attempt
             $existing = $db->query("SELECT id FROM quiz_attempts WHERE quiz_id = ? AND student_id = ? AND status = 'in_progress'", [$quizId, $user['id']])->fetch();
             if ($existing) {
                 jsonResponse(['success' => true, 'attempt_id' => $existing['id'], 'message' => 'Continuing existing attempt.']);
