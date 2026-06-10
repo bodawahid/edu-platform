@@ -39,22 +39,29 @@ CLASS_MAP = {
 def clean_and_decode(text: str) -> str:
     if not isinstance(text, str): 
         return ""
-    text_cleaned = text.lower()
-    text_cleaned = urllib.parse.unquote(text_cleaned)
-    text_cleaned = urllib.parse.unquote(text_cleaned)
-    text_cleaned = html.unescape(text_cleaned)
-    text_cleaned = re.sub(r'\s+http/\d\.\d.*$', '', text_cleaned)
-    text_cleaned = re.sub(r'https?://[^/\s]+', '', text_cleaned)
-    text_cleaned = re.sub(r'^\s*/\s*', '', text_cleaned)
     
-    # لستة الستوب ووردز النظيفة عشان سياق الـ Login ميبوظش
-    stop_words = ['username', 'password', 'login', 'pass', 'email', 'submit', 'john', 'doe']
-    for word in stop_words:
-        text_cleaned = re.sub(r'\b' + word + r'\b', '', text_cleaned)
+    # 1. فك التشفير الأساسي
+    text = urllib.parse.unquote(text)
+    text = urllib.parse.unquote(text)
+    text = html.unescape(text)
+    text = text.lower()
     
-    text_cleaned = re.sub(r'([<<>\'"()=,;/\\#])', r' \1 ', text_cleaned)
-    text_cleaned = re.sub(r'\s+', ' ', text_cleaned)
-    return text_cleaned.strip()
+    # 2. التعديل الجوهري: إزالة تعليقات MySQL الشرطية قبل أن يراها الموديل
+    # هذا يمنع الموديل من الخلط بين /*!50000union*/ وبين Path Traversal
+    text = re.sub(r'/\*![\d\s]*\*/', ' ', text) 
+    text = re.sub(r'/\*.*?\*/', ' ', text)
+    
+    # 3. عزل الرموز بشكل واضح للـ Tokenizer (بدون حذف)
+    # الـ SQLi يعتمد على وجود الرموز في سياق، لذا لا تحذفها
+    text = re.sub(r'([<>\'\"()=,;/\\#\-\+\*\!])', r' \1 ', text)
+    
+    # 4. تنظيف الـ URLs وتحويلها لـ Tokens موحدة
+    text = re.sub(r'https?://\S+', ' url_link ', text)
+    
+    # 5. تقليل المسافات الزائدة
+    text = re.sub(r'\s+', ' ', text)
+    
+    return text.strip()
 
 def flatten_payload(request_data) -> str:
     parts = []
@@ -77,7 +84,6 @@ def flatten_payload(request_data) -> str:
         extract_values(request_data)
     return " ".join(parts)
 
-@app.route('/predict', methods=['POST'])
 @app.route('/predict', methods=['POST'])
 def predict():
     try:
