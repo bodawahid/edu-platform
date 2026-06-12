@@ -12,15 +12,17 @@ if (!$user || !in_array($user['role_name'], ['admin', 'doctor', 'ta', 'student']
     jsonResponse(['success' => false, 'message' => 'Access denied.'], 403);
 }
 
-if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+// السماح بـ GET فقط في حالة استعراض قائمة التسليمات لربطها بالـ Dashboard، وباقي العمليات التعديلية تتم عبر POST
+if ($_SERVER['REQUEST_METHOD'] !== 'POST' && !($_SERVER['REQUEST_METHOD'] === 'GET' && ($_GET['action'] ?? '') === 'view_submissions')) {
     jsonResponse(['success' => false, 'message' => 'Invalid request method.'], 405);
 }
 
-if (!validateCSRFToken($_POST['csrf_token'] ?? '')) {
+// التحقق من الـ CSRF Token في عمليات الـ POST فقط
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && !validateCSRFToken($_POST['csrf_token'] ?? '')) {
     jsonResponse(['success' => false, 'message' => 'Invalid CSRF token.'], 403);
 }
 
-$action = $_POST['action'] ?? '';
+$action = $_POST['action'] ?? $_GET['action'] ?? '';
 $db = Database::getInstance();
 
 try {
@@ -77,6 +79,31 @@ try {
                 'id' => $newId,
                 'file_uploaded' => $fileUploaded
             ]);
+            break;
+
+        // 🚨 إضافة الأكشن المسؤول عن جلب تسليمات الطلاب للتصحيح ومطابقتها مع واجهة الـ Dashboard
+        case 'view_submissions':
+            if ($user['role_name'] !== 'doctor' && $user['role_name'] !== 'ta' && $user['role_name'] !== 'admin') {
+                jsonResponse(['success' => false, 'message' => 'Access denied.'], 403);
+            }
+
+            $courseId = filter_input(INPUT_GET, 'course_id', FILTER_VALIDATE_INT);
+            if (!$courseId) {
+                jsonResponse(['success' => false, 'message' => 'Invalid course ID.'], 400);
+            }
+
+            // استعلام جلب بيانات تسليمات الطلاب المربوطة بالتكليفات التابعة للكورس المختار
+            $submissions = $db->query(
+                "SELECT sub.id, sub.file_name, sub.file_path, sub.submission_text, sub.marks_obtained, sub.submitted_at, u.full_name as student_name
+                 FROM assignment_submissions sub
+                 JOIN assignments a ON sub.assignment_id = a.id
+                 JOIN users u ON sub.student_id = u.id
+                 WHERE a.course_id = ?
+                 ORDER BY sub.submitted_at DESC",
+                [$courseId]
+            )->fetchAll();
+
+            jsonResponse(['success' => true, 'submissions' => $submissions]);
             break;
 
         case 'update':

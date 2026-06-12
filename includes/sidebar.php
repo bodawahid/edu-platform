@@ -32,13 +32,12 @@ $navItems = [
         ['icon' => '&#128221;', 'label' => 'Grading Queue', 'page' => 'grading', 'link' => '/ta/dashboard.php?section=grading'],
         ['icon' => '&#128101;', 'label' => 'Students', 'page' => 'students', 'link' => '/ta/dashboard.php?section=students'],
     ],
-        'student' => [
+    'student' => [
         ['icon' => '&#127968;', 'label' => 'Dashboard', 'page' => 'dashboard', 'link' => '/student/dashboard.php'],
         ['icon' => '&#128218;', 'label' => 'My Courses', 'page' => 'courses', 'link' => '/student/dashboard.php?section=courses'],
         ['icon' => '&#128203;', 'label' => 'To-Do List', 'page' => 'todo', 'link' => '/student/dashboard.php?section=todo'],
         ['icon' => '&#128221;', 'label' => 'Quizzes', 'page' => 'quizzes', 'link' => '/student/dashboard.php?section=quizzes'],
         ['icon' => '&#128193;', 'label' => 'Assignments', 'page' => 'assignments', 'link' => '/student/dashboard.php?section=assignments'],
-        ['icon' => '&#128200;', 'label' => 'Gradebook', 'page' => 'gradebook', 'link' => '/student/dashboard.php?section=gradebook'],
         ['icon' => '&#127891;', 'label' => 'My Grades', 'page' => 'grades', 'link' => '/student/dashboard.php?section=grades'],
     ],
 ];
@@ -62,7 +61,7 @@ $section = $_GET['section'] ?? 'dashboard';
         </div>
         <div class="sidebar-user-info">
             <div class="sidebar-user-name"><?= htmlspecialchars($user['full_name']) ?></div>
-            <div class="sidebar-user-role"><?= $user['role_display'] ?></div>
+            <div class="sidebar-user-role"><?= htmlspecialchars($user['role_display'] ?? 'Student') ?></div>
         </div>
     </div>
 
@@ -83,7 +82,7 @@ $section = $_GET['section'] ?? 'dashboard';
         <a href="/" class="sidebar-logout" style="margin-bottom: 8px;">
             <span>&#127968;</span> Home
         </a>
-        <a href="#" class="sidebar-logout" onclick="logout(); return false;">
+        <a href="/logout.php" class="sidebar-logout">
             <span>&#128682;</span> Logout
         </a>
     </div>

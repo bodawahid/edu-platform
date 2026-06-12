@@ -324,7 +324,6 @@ $stats = [
                                             <td>
                                                 <?php if ($item['file_path']): ?>
                                                 <a href="/<?= $item['file_path'] ?>" target="_blank" class="btn btn-sm btn-outline">&#128190; Download</a>
-                                                <?php indexGrowthTemp == (int)$item['id']; ?>
                                                 <?php else: ?>Text Only<?php endif; ?>
                                             </td>
                                             <td>
