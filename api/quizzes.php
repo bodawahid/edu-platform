@@ -16,15 +16,17 @@ if (!$user || !in_array($user['role_name'], ['admin', 'doctor'])) {
     }
 }
 
-if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+// السماح بـ GET فقط في حالة جلب بيانات سؤال واحد للمودال، وباقي العمليات التعديلية تتم عبر POST
+if ($_SERVER['REQUEST_METHOD'] !== 'POST' && !($_SERVER['REQUEST_METHOD'] === 'GET' && ($_GET['action'] ?? '') === 'get_question')) {
     jsonResponse(['success' => false, 'message' => 'Invalid request method.'], 405);
 }
 
-if (!validateCSRFToken($_POST['csrf_token'] ?? '')) {
+// التحقق من الـ CSRF Token في عمليات الـ POST فقط
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && !validateCSRFToken($_POST['csrf_token'] ?? '')) {
     jsonResponse(['success' => false, 'message' => 'Invalid CSRF token.'], 403);
 }
 
-$action = $_POST['action'] ?? '';
+$action = $_POST['action'] ?? $_GET['action'] ?? '';
 $db = Database::getInstance();
 
 try {
@@ -53,7 +55,6 @@ try {
             $newId = $db->lastInsertId();
             logActivity('quiz_created', 'quiz', $newId, "Created quiz: $title");
             
-            // 🚨 1️⃣ إشعار للطلبة: الدكتور نزل كويز جديد
             addNotification(null, 'student', 'quiz', '📝 New Quiz Added', "Dr. posted a new quiz: \"{$title}\". Check your schedule.");
 
             jsonResponse(['success' => true, 'message' => 'Quiz created successfully.', 'id' => $newId]);
@@ -105,11 +106,59 @@ try {
             jsonResponse(['success' => true, 'message' => 'Question added successfully.']);
             break;
 
-                case 'update':
+        // 🚨 إضافة حالة جلب بيانات سؤال واحد لعرضه في خانات المودال للتعديل
+        case 'get_question':
+            $id = filter_input(INPUT_GET, 'id', FILTER_VALIDATE_INT);
+            if (!$id) {
+                jsonResponse(['success' => false, 'message' => 'Invalid question ID.'], 400);
+            }
+
+            $question = $db->query("SELECT * FROM questions WHERE id = ?", [$id])->fetch();
+            if (!$question) {
+                jsonResponse(['success' => false, 'message' => 'Question not found.'], 404);
+            }
+
+            jsonResponse(['success' => true, 'question' => $question]);
+            break;
+
+        // 🚨 إضافة حالة تحديث نص السؤال والدرجة المعطاة له لايف
+        case 'update_question':
+            $id = filter_input(INPUT_POST, 'id', FILTER_VALIDATE_INT);
+            $questionText = sanitizeInput($_POST['question_text'] ?? '', 'string');
+            $marks = filter_input(INPUT_POST, 'points', FILTER_VALIDATE_FLOAT); // متوافق مع اسم الـ field المكتوب في الفرونت
+
+            if (!$id || empty($questionText)) {
+                jsonResponse(['success' => false, 'message' => 'Question ID and text are required.'], 400);
+            }
+
+            $db->query(
+                "UPDATE questions SET question_text = ?, marks = ? WHERE id = ?",
+                [$questionText, $marks, $id]
+            );
+
+            logActivity('question_updated', 'question', $id, "Updated question ID: $id");
+            jsonResponse(['success' => true, 'message' => 'Question updated successfully.']);
+            break;
+
+        // 🚨 إضافة حالة حذف السؤال نهائياً من قاعدة البيانات
+        case 'delete_question':
+            $id = filter_input(INPUT_POST, 'id', FILTER_VALIDATE_INT);
+            if (!$id) {
+                jsonResponse(['success' => false, 'message' => 'Invalid question ID.'], 400);
+            }
+
+            // حذف الخيارات التابعة أولاً لمنع مشاكل الـ Foreign Key constraints
+            $db->query("DELETE FROM question_options WHERE question_id = ?", [$id]);
+            $db->query("DELETE FROM questions WHERE id = ?", [$id]);
+
+            logActivity('question_deleted', 'question', $id, "Deleted question ID: $id");
+            jsonResponse(['success' => true, 'message' => 'Question and its options successfully deleted.']);
+            break;
+
+        case 'update':
             $id = filter_input(INPUT_POST, 'id', FILTER_VALIDATE_INT);
             if (!$id) jsonResponse(['success' => false, 'message' => 'Invalid quiz ID.'], 400);
 
-            // Verify ownership
             $existing = $db->query("SELECT created_by FROM quizzes WHERE id = ?", [$id])->fetch();
             if (!$existing || ($existing['created_by'] != $user['id'] && $user['role_name'] !== 'admin')) {
                 jsonResponse(['success' => false, 'message' => 'Permission denied.'], 403);
@@ -159,7 +208,6 @@ try {
                 jsonResponse(['success' => false, 'message' => 'Quiz ID and status are required.'], 400);
             }
 
-            // Verify ownership
             $existing = $db->query("SELECT created_by, title, is_published FROM quizzes WHERE id = ?", [$id])->fetch();
             if (!$existing || ($existing['created_by'] != $user['id'] && $user['role_name'] !== 'admin')) {
                 jsonResponse(['success' => false, 'message' => 'Permission denied.'], 403);
@@ -170,7 +218,6 @@ try {
             $statusText = $isPublished ? 'published' : 'set to draft';
             logActivity('quiz_publish_toggled', 'quiz', $id, "Quiz $id $statusText");
 
-            // Notify students if newly published
             if ($isPublished && !$existing['is_published']) {
                 addNotification(null, 'student', 'quiz', '📝 Quiz Published', "Quiz \"{$existing['title']}\" is now published and ready to take.");
             }
@@ -234,12 +281,10 @@ try {
 
             logActivity('quiz_submitted', 'quiz_attempt', $attemptId, "Submitted quiz $quizId with score $totalScore");
             
-            // 🚨 2️⃣ إشعار للدكتور: فيه طالب سلم الكويز بتاعه
             $studentName = htmlspecialchars($user['username'] ?? 'A student');
             $quizTitle = htmlspecialchars($quiz['title'] ?? 'Quiz');
             $instructorId = $quiz['created_by'] ?? null;
             
-            // بنبعته لـ ID الدكتور المعين اللي عمل الكويز، والـ Target بتاعه 'doctor'
             addNotification($instructorId, 'doctor', 'quiz_submission', '🎓 Quiz Attempt Submitted', "Student ({$studentName}) submitted \"{$quizTitle}\". Score: {$totalScore}");
 
             jsonResponse(['success' => true, 'message' => 'Quiz submitted!', 'score' => $totalScore, 'percentage' => round($percentage, 2)]);

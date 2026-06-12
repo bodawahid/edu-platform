@@ -1,7 +1,7 @@
 <?php
 
 /**
- * Doctor Dashboard - Compatible with Existing APIs
+ * Doctor Dashboard - Fully Compatible with Existing Quizzes & Assignments APIs
  */
 
 require_once __DIR__ . '/../includes/functions.php';
@@ -96,7 +96,7 @@ if ($section === 'quiz_detail' && isset($_GET['id'])) {
     if ($quizId) {
         $quiz = $db->query("SELECT q.*, c.course_name FROM quizzes q JOIN courses c ON q.course_id = c.id WHERE q.id = ? AND q.created_by = ?", [$quizId, $user['id']])->fetch();
         if ($quiz) {
-            $questions = $db->query("SELECT * FROM questions WHERE quiz_id = ? ORDER BY question_order", [$quizId])->fetchAll();
+            $questions = $db->query("SELECT * FROM questions WHERE quiz_id = ? ORDER BY id ASC", [$quizId])->fetchAll();
         }
     }
 }
@@ -141,6 +141,23 @@ if ($section === 'notifications') {
     <title>Doctor Dashboard - Faculty of Engineering</title>
     <link rel="stylesheet" href="/assets/css/style.css">
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        .submission-desc-box {
+            background: #f8f9fa;
+            border-left: 3px solid var(--primary);
+            padding: 8px 12px;
+            font-size: 0.85rem;
+            color: #555;
+            max-width: 250px;
+            word-wrap: break-word;
+            border-radius: 0 4px 4px 0;
+        }
+        .action-buttons-flex {
+            display: flex;
+            gap: 6px;
+            align-items: center;
+        }
+    </style>
 </head>
 
 <body>
@@ -374,7 +391,7 @@ if ($section === 'notifications') {
                     <div class="page-header">
                         <h1 class="page-title">Quiz Builder</h1>
                         <p class="page-subtitle">Create and manage quizzes</p>
-                        <button class="btn btn-primary" onclick="openModal('createQuizModal')" style="margin-top: 12px;">
+                        <button class="btn btn-primary" onclick="openModal('createQuizModal') style="margin-top: 12px;">
                             <span>&#10133;</span> Create New Quiz
                         </button>
                     </div>
@@ -406,7 +423,7 @@ if ($section === 'notifications') {
                                                 <td><?= $q['attempt_count'] ?></td>
                                                 <td><?= $q['is_published'] ? '<span class="badge badge-success">Published</span>' : '<span class="badge badge-warning">Draft</span>' ?></td>
                                                 <td>
-                                                    <a href="?section=quiz_detail&id=<?= $q['id'] ?>" class="btn btn-sm btn-info" title="View/Edit Questions">&#128269;</a>
+                                                    <a href="?section=quiz_detail&id=<?= $q['id'] ?>" class="btn btn-sm btn-info" title="View/Edit Questions">&#128269; Control Panel</a>
                                                     <button class="btn btn-sm <?= $q['is_published'] ? 'btn-warning' : 'btn-success' ?>"
                                                         onclick="toggleQuizPublish(<?= $q['id'] ?>, <?= $q['is_published'] ? 0 : 1 ?>)"
                                                         title="<?= $q['is_published'] ? 'Unpublish (Set to Draft)' : 'Publish Quiz' ?>">
@@ -447,7 +464,13 @@ if ($section === 'notifications') {
                                     $options = $db->query("SELECT * FROM question_options WHERE question_id = ? ORDER BY option_order", [$q['id']])->fetchAll();
                                 ?>
                                     <div class="question-card" style="margin-bottom: 20px; padding: 16px; border: 1px solid #e9ecef; border-radius: 8px;">
-                                        <div class="question-number" style="font-size: 0.85rem; color: var(--primary); font-weight: 600; margin-bottom: 8px;">Question <?= $idx + 1 ?> &middot; <?= $q['marks'] ?> marks</div>
+                                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                                            <div class="question-number" style="font-size: 0.85rem; color: var(--primary); font-weight: 600;">Question <?= $idx + 1 ?> &middot; <?= $q['marks'] ?> marks</div>
+                                            <div class="action-buttons-flex">
+                                                <button class="btn btn-sm btn-info" onclick="openEditQuestionModal(<?= $q['id'] ?>, '<?= htmlspecialchars($q['question_text'], ENT_QUOTES) ?>', <?= $q['marks'] ?>)">&#9998; Edit</button>
+                                                <button class="btn btn-sm btn-danger" onclick="deleteQuestionInline(<?= $q['id'] ?>)">&#128465; Delete</button>
+                                            </div>
+                                        </div>
                                         <div class="question-text" style="font-size: 1.05rem; font-weight: 500; margin-bottom: 12px;"><?= htmlspecialchars($q['question_text']) ?></div>
                                         <div class="options-list" style="display: flex; flex-direction: column; gap: 8px;">
                                             <?php foreach ($options as $opt): ?>
@@ -473,7 +496,6 @@ if ($section === 'notifications') {
                                     <p><strong>Duration:</strong> <?= $quiz['duration_minutes'] ?? '' ?> minutes</p>
                                     <p><strong>Total Marks:</strong> <?= $quiz['total_marks'] ?? '' ?></p>
                                     <p><strong>Passing:</strong> <?= $quiz['passing_marks'] ?? '' ?></p>
-                                    <p><strong>Shuffle:</strong> <?= ($quiz['shuffle_questions'] ?? 0) ? 'Yes' : 'No' ?></p>
                                     <p><strong>Published:</strong> <?= ($quiz['is_published'] ?? 0) ? '<span class="badge badge-success">Yes</span>' : '<span class="badge badge-warning">No</span>' ?></p>
                                 </div>
                             </div>
@@ -567,8 +589,9 @@ if ($section === 'notifications') {
                                     <thead>
                                         <tr>
                                             <th>Student</th>
-                                            <th>Submitted</th>
-                                            <th>File</th>
+                                            <th>Description Text</th>
+                                            <th>Submitted Date</th>
+                                            <th>File Controls</th>
                                             <th>Status</th>
                                             <th>Marks</th>
                                             <th>Actions</th>
@@ -578,11 +601,21 @@ if ($section === 'notifications') {
                                         <?php foreach ($submissions as $sub): ?>
                                             <tr>
                                                 <td><?= htmlspecialchars($sub['full_name']) ?> <small style="color:var(--gray)">(<?= $sub['username'] ?>)</small></td>
+                                                <td>
+                                                    <div class="submission-desc-box">
+                                                        <?= !empty($sub['submission_text']) ? htmlspecialchars($sub['submission_text']) : '<em>No comment attached.</em>' ?>
+                                                    </div>
+                                                </td>
                                                 <td><?= timeAgo($sub['submitted_at']) ?> <?= $sub['is_late'] ? '<span class="badge badge-warning">Late</span>' : '' ?></td>
                                                 <td>
                                                     <?php if ($sub['file_path']): ?>
-                                                        <a href="/<?= htmlspecialchars($sub['file_path']) ?>" target="_blank" class="btn btn-sm btn-outline">&#128190; Download</a>
-                                                        <?php else: ?>-<?php endif; ?>
+                                                        <div style="display: flex; flex-direction: column; gap: 4px;">
+                                                            <a href="/<?= htmlspecialchars($sub['file_path']) ?>" target="_blank" class="btn btn-sm btn-outline" style="text-align:center;">👁️ View File</a>
+                                                            <a href="/<?= htmlspecialchars($sub['file_path']) ?>" download class="btn btn-sm btn-primary" style="text-align:center;">📥 Download</a>
+                                                        </div>
+                                                    <?php else: ?>
+                                                        <span style="color:var(--gray);">No asset uploaded</span>
+                                                    <?php endif; ?>
                                                 </td>
                                                 <td><span class="badge badge-<?= $sub['status'] === 'graded' ? 'success' : 'warning' ?>"><?= ucfirst($sub['status']) ?></span></td>
                                                 <td><?= $sub['marks_obtained'] !== null ? $sub['marks_obtained'] . '/' . $assignment['max_marks'] : '-' ?></td>
@@ -590,14 +623,14 @@ if ($section === 'notifications') {
                                                     <?php if ($sub['status'] !== 'graded'): ?>
                                                         <button class="btn btn-sm btn-primary" onclick="gradeSubmission(<?= $sub['id'] ?>, <?= $assignment['max_marks'] ?>)">&#9998; Grade</button>
                                                     <?php else: ?>
-                                                        <span class="badge badge-success">Done</span>
+                                                        <span class="badge badge-success">Evaluated</span>
                                                     <?php endif; ?>
                                                 </td>
                                             </tr>
                                         <?php endforeach; ?>
                                         <?php if (empty($submissions)): ?>
                                             <tr>
-                                                <td colspan="6" style="text-align:center;color:var(--gray);padding:40px;">No submissions yet.</td>
+                                                <td colspan="7" style="text-align:center;color:var(--gray);padding:40px;">No submissions yet.</td>
                                             </tr>
                                         <?php endif; ?>
                                     </tbody>
@@ -630,7 +663,7 @@ if ($section === 'notifications') {
                     <?php foreach ($myCourses as $course):
                         $courseTas = $db->query(
                             "SELECT u.id, u.full_name, u.email, u.department FROM course_tas ct
-                         JOIN users u ON ct.ta_id = u.id WHERE ct.course_id = ?",
+                             JOIN users u ON ct.ta_id = u.id WHERE ct.course_id = ?",
                             [$course['id']]
                         )->fetchAll();
                     ?>
@@ -738,7 +771,6 @@ if ($section === 'notifications') {
         </div>
     </div>
 
-    <!-- Create Quiz Modal -->
     <div class="modal-overlay" id="createQuizModal">
         <div class="modal">
             <div class="modal-header">
@@ -808,7 +840,6 @@ if ($section === 'notifications') {
         </div>
     </div>
 
-    <!-- Add Question Modal -->
     <div class="modal-overlay" id="addQuestionModal">
         <div class="modal">
             <div class="modal-header">
@@ -875,7 +906,33 @@ if ($section === 'notifications') {
         </div>
     </div>
 
-    <!-- Create Assignment Modal -->
+    <div class="modal-overlay" id="editQuestionModal">
+        <div class="modal">
+            <div class="modal-header">
+                <h3 class="modal-title">Edit Question Parameters</h3>
+                <button class="modal-close" onclick="closeModal('editQuestionModal')">&times;</button>
+            </div>
+            <div class="modal-body">
+                <form id="editQuestionForm">
+                    <?= csrfField() ?>
+                    <input type="hidden" name="id" id="inline_q_id">
+                    <div class="form-group">
+                        <label class="form-label">Question Text Statement *</label>
+                        <textarea name="question_text" id="inline_q_text" class="form-control" rows="3" required></textarea>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Points Value / Weight</label>
+                        <input type="number" name="points" id="inline_q_marks" class="form-control" min="0.5" step="0.5" required>
+                    </div>
+                </form>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-outline" onclick="closeModal('editQuestionModal')">Cancel</button>
+                <button class="btn btn-primary" onclick="submitInlineQuestionUpdate()">Save Updates</button>
+            </div>
+        </div>
+    </div>
+
     <div class="modal-overlay" id="createAssignmentModal">
         <div class="modal">
             <div class="modal-header">
@@ -907,9 +964,8 @@ if ($section === 'notifications') {
                         <textarea name="instructions" class="form-control" rows="3" placeholder="Detailed instructions for students..."></textarea>
                     </div>
                     <div class="form-group">
-                        <label class="form-label">Instructions File (PDF) <span style="color:var(--gray);font-size:0.85rem">— Optional: Upload detailed instructions as PDF</span></label>
+                        <label class="form-label">Instructions File (PDF) <span style="color:var(--gray);font-size:0.85rem">— Optional</span></label>
                         <input type="file" name="instructions_file" class="form-control" accept=".pdf,application/pdf" onchange="validatePdfFile(this)">
-                        <small style="color:var(--gray);font-size:0.8rem">Max 10MB. Accepted: PDF only.</small>
                     </div>
                     <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">
                         <div class="form-group">
@@ -946,7 +1002,6 @@ if ($section === 'notifications') {
         </div>
     </div>
 
-    <!-- Edit Assignment Modal -->
     <div class="modal-overlay" id="editAssignmentModal">
         <div class="modal">
             <div class="modal-header">
@@ -989,7 +1044,6 @@ if ($section === 'notifications') {
         </div>
     </div>
 
-    <!-- Edit Quiz Modal -->
     <div class="modal-overlay" id="editQuizModal">
         <div class="modal">
             <div class="modal-header">
@@ -1051,7 +1105,6 @@ if ($section === 'notifications') {
         </div>
     </div>
 
-    <!-- Grade Modal -->
     <div class="modal-overlay" id="gradeModal">
         <div class="modal" style="max-width: 400px;">
             <div class="modal-header">
@@ -1079,7 +1132,6 @@ if ($section === 'notifications') {
         </div>
     </div>
 
-    <!-- Assign TA Modal -->
     <div class="modal-overlay" id="assignTaModal">
         <div class="modal" style="max-width: 450px;">
             <div class="modal-header">
@@ -1099,9 +1151,6 @@ if ($section === 'notifications') {
                             <?php endforeach; ?>
                         </select>
                     </div>
-                    <?php if (empty($allTas)): ?>
-                        <p style="color: var(--danger); font-size: 0.9rem;">No TAs available in the system. Please contact an administrator.</p>
-                    <?php endif; ?>
                 </form>
             </div>
             <div class="modal-footer">
@@ -1142,7 +1191,6 @@ if ($section === 'notifications') {
             });
         <?php endif; ?>
 
-        // Question Type Toggle
         function toggleQuestionType() {
             const type = document.getElementById('qType').value;
             const mcqDiv = document.getElementById('mcqOptions');
@@ -1156,59 +1204,85 @@ if ($section === 'notifications') {
             }
         }
 
+        // Inline Question CRUD operations bound to api/quizzes.php
+        function openEditQuestionModal(id, currentText, currentMarks) {
+            document.getElementById('inline_q_id').value = id;
+            document.getElementById('inline_q_text').value = currentText;
+            document.getElementById('inline_q_marks').value = currentMarks;
+            openModal('editQuestionModal');
+        }
+
+        async function submitInlineQuestionUpdate() {
+            const form = document.getElementById('editQuestionForm');
+            if (!form.checkValidity()) { form.reportValidity(); return; }
+
+            const formData = new FormData(form);
+            formData.append('action', 'update_question');
+
+            try {
+                const res = await fetch('/api/quizzes.php', { method: 'POST', body: formData });
+                const data = await res.json();
+                if (data.success) {
+                    closeModal('editQuestionModal');
+                    showNotification('Question committed successfully!', 'success');
+                    setTimeout(() => location.reload(), 500);
+                } else {
+                    showNotification(data.message || 'Error updating question node', 'error');
+                }
+            } catch(e) { showNotification('API Node communication error', 'error'); }
+        }
+
+        function deleteQuestionInline(id) {
+            confirmDelete('Completely purge this question node? This removes options constraints.', async () => {
+                const formData = new FormData();
+                formData.append('action', 'delete_question');
+                formData.append('id', id);
+                formData.append('csrf_token', document.querySelector('input[name="csrf_token"]').value);
+
+                try {
+                    const res = await fetch('/api/quizzes.php', { method: 'POST', body: formData });
+                    const data = await res.json();
+                    if(data.success) {
+                        showNotification('Question removed from storage node.', 'success');
+                        setTimeout(() => location.reload(), 500);
+                    } else { showNotification(data.message, 'error'); }
+                } catch(e) { showNotification('Connection lost.', 'error'); }
+            });
+        }
+
         // Quiz CRUD
         async function submitQuiz() {
             const form = document.getElementById('createQuizForm');
-            if (!form.checkValidity()) {
-                form.reportValidity();
-                return;
-            }
+            if (!form.checkValidity()) { form.reportValidity(); return; }
             const formData = new FormData(form);
             formData.append('action', 'create');
 
             try {
-                const res = await fetch('/api/quizzes.php', {
-                    method: 'POST',
-                    body: formData
-                });
+                const res = await fetch('/api/quizzes.php', { method: 'POST', body: formData });
                 const data = await res.json();
                 if (data.success) {
                     showNotification('Quiz created! Now add questions.', 'success');
                     closeModal('createQuizModal');
                     setTimeout(() => window.location.href = '?section=quiz_detail&id=' + data.id, 500);
-                } else {
-                    showNotification(data.message || 'Error creating quiz', 'error');
-                }
-            } catch (e) {
-                showNotification('Error creating quiz: ' + e.message, 'error');
-            }
+                } else { showNotification(data.message || 'Error creating quiz', 'error'); }
+            } catch (e) { showNotification('Error creating quiz: ' + e.message, 'error'); }
         }
 
         async function submitQuestion() {
             const form = document.getElementById('addQuestionForm');
-            if (!form.checkValidity()) {
-                form.reportValidity();
-                return;
-            }
+            if (!form.checkValidity()) { form.reportValidity(); return; }
             const formData = new FormData(form);
             formData.append('action', 'add_question');
 
             try {
-                const res = await fetch('/api/quizzes.php', {
-                    method: 'POST',
-                    body: formData
-                });
+                const res = await fetch('/api/quizzes.php', { method: 'POST', body: formData });
                 const data = await res.json();
                 if (data.success) {
                     showNotification('Question added!', 'success');
                     closeModal('addQuestionModal');
                     setTimeout(() => location.reload(), 500);
-                } else {
-                    showNotification(data.message || 'Error adding question', 'error');
-                }
-            } catch (e) {
-                showNotification('Error adding question: ' + e.message, 'error');
-            }
+                } else { showNotification(data.message || 'Error adding question', 'error'); }
+            } catch (e) { showNotification('Error adding question: ' + e.message, 'error'); }
         }
 
         function deleteQuiz(id) {
@@ -1219,22 +1293,16 @@ if ($section === 'notifications') {
                 formData.append('csrf_token', document.querySelector('input[name="csrf_token"]').value);
 
                 try {
-                    const res = await fetch('/api/quizzes.php', {
-                        method: 'POST',
-                        body: formData
-                    });
+                    const res = await fetch('/api/quizzes.php', { method: 'POST', body: formData });
                     const data = await res.json();
                     if (data.success) {
                         showNotification('Quiz deleted!', 'success');
                         setTimeout(() => location.reload(), 500);
                     } else showNotification(data.message || 'Error deleting quiz', 'error');
-                } catch (e) {
-                    showNotification('Error: ' + e.message, 'error');
-                }
+                } catch (e) { showNotification('Error: ' + e.message, 'error'); }
             });
         }
 
-        // PDF File Validation
         function validatePdfFile(input) {
             const file = input.files[0];
             if (!file) return;
@@ -1253,36 +1321,20 @@ if ($section === 'notifications') {
         // Assignment CRUD
         async function submitAssignment() {
             const form = document.getElementById('createAssignmentForm');
-            if (!form.checkValidity()) {
-                form.reportValidity();
-                return;
-            }
+            if (!form.checkValidity()) { form.reportValidity(); return; }
 
             const formData = new FormData(form);
             formData.append('action', 'create');
 
-            // Handle file upload
-            const fileInput = form.querySelector('input[name=\"instructions_file\"]');
-            if (fileInput && fileInput.files[0]) {
-                formData.append('instructions_file', fileInput.files[0]);
-            }
-
             try {
-                const res = await fetch('/api/assignments.php', {
-                    method: 'POST',
-                    body: formData
-                });
+                const res = await fetch('/api/assignments.php', { method: 'POST', body: formData });
                 const data = await res.json();
                 if (data.success) {
-                    showNotification('Assignment created!' + (data.file_uploaded ? ' PDF uploaded.' : ''), 'success');
+                    showNotification('Assignment created!', 'success');
                     closeModal('createAssignmentModal');
                     setTimeout(() => location.reload(), 500);
-                } else {
-                    showNotification(data.message || 'Error creating assignment', 'error');
-                }
-            } catch (e) {
-                showNotification('Error creating assignment: ' + e.message, 'error');
-            }
+                } else { showNotification(data.message || 'Error creating assignment', 'error'); }
+            } catch (e) { showNotification('Error creating assignment: ' + e.message, 'error'); }
         }
 
         function openEditAssignmentModal(id, title, description, instructions, deadline, maxMarks) {
@@ -1290,7 +1342,6 @@ if ($section === 'notifications') {
             document.getElementById('editAssignmentTitle').value = title;
             document.getElementById('editAssignmentDesc').value = description;
             document.getElementById('editAssignmentInst').value = instructions;
-            // Format deadline for datetime-local input
             const d = new Date(deadline);
             const formatted = d.getFullYear() + '-' +
                 String(d.getMonth() + 1).padStart(2, '0') + '-' +
@@ -1304,28 +1355,18 @@ if ($section === 'notifications') {
 
         async function submitEditAssignment() {
             const form = document.getElementById('editAssignmentForm');
-            if (!form.checkValidity()) {
-                form.reportValidity();
-                return;
-            }
+            if (!form.checkValidity()) { form.reportValidity(); return; }
             const formData = new FormData(form);
 
             try {
-                const res = await fetch('/api/assignments.php', {
-                    method: 'POST',
-                    body: formData
-                });
+                const res = await fetch('/api/assignments.php', { method: 'POST', body: formData });
                 const data = await res.json();
                 if (data.success) {
                     showNotification('Assignment updated!', 'success');
                     closeModal('editAssignmentModal');
                     setTimeout(() => location.reload(), 500);
-                } else {
-                    showNotification(data.message || 'Error updating assignment', 'error');
-                }
-            } catch (e) {
-                showNotification('Error: ' + e.message, 'error');
-            }
+                } else { showNotification(data.message || 'Error updating assignment', 'error'); }
+            } catch (e) { showNotification('Error: ' + e.message, 'error'); }
         }
 
         async function toggleAssignmentPublish(id, newStatus) {
@@ -1333,23 +1374,16 @@ if ($section === 'notifications') {
             formData.append('action', 'toggle_publish');
             formData.append('id', id);
             formData.append('is_published', newStatus);
-            formData.append('csrf_token', document.querySelector('input[name=\"csrf_token\"]').value);
+            formData.append('csrf_token', document.querySelector('input[name="csrf_token"]').value);
 
             try {
-                const res = await fetch('/api/assignments.php', {
-                    method: 'POST',
-                    body: formData
-                });
+                const res = await fetch('/api/assignments.php', { method: 'POST', body: formData });
                 const data = await res.json();
                 if (data.success) {
                     showNotification(data.message, 'success');
                     setTimeout(() => location.reload(), 300);
-                } else {
-                    showNotification(data.message || 'Error', 'error');
-                }
-            } catch (e) {
-                showNotification('Error: ' + e.message, 'error');
-            }
+                } else { showNotification(data.message || 'Error', 'error'); }
+            } catch (e) { showNotification('Error: ' + e.message, 'error'); }
         }
 
         function deleteAssignment(id) {
@@ -1357,25 +1391,19 @@ if ($section === 'notifications') {
                 const formData = new FormData();
                 formData.append('action', 'delete');
                 formData.append('id', id);
-                formData.append('csrf_token', document.querySelector('input[name=\"csrf_token\"]').value);
+                formData.append('csrf_token', document.querySelector('input[name="csrf_token"]').value);
 
                 try {
-                    const res = await fetch('/api/assignments.php', {
-                        method: 'POST',
-                        body: formData
-                    });
+                    const res = await fetch('/api/assignments.php', { method: 'POST', body: formData });
                     const data = await res.json();
                     if (data.success) {
                         showNotification('Assignment deleted!', 'success');
                         setTimeout(() => location.reload(), 500);
                     } else showNotification(data.message || 'Error deleting assignment', 'error');
-                } catch (e) {
-                    showNotification('Error: ' + e.message, 'error');
-                }
+                } catch (e) { showNotification('Error: ' + e.message, 'error'); }
             });
         }
 
-        // Quiz Edit & Publish Toggle
         function openEditQuizModal(id, title, description, duration, totalMarks, passingMarks, startTime, endTime) {
             document.getElementById('editQuizId').value = id;
             document.getElementById('editQuizTitle').value = title;
@@ -1384,7 +1412,6 @@ if ($section === 'notifications') {
             document.getElementById('editQuizTotalMarks').value = totalMarks;
             document.getElementById('editQuizPassingMarks').value = passingMarks;
 
-            // Format datetime-local values
             const fmt = (dt) => {
                 const d = new Date(dt);
                 return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' +
@@ -1399,28 +1426,18 @@ if ($section === 'notifications') {
 
         async function submitEditQuiz() {
             const form = document.getElementById('editQuizForm');
-            if (!form.checkValidity()) {
-                form.reportValidity();
-                return;
-            }
+            if (!form.checkValidity()) { form.reportValidity(); return; }
             const formData = new FormData(form);
 
             try {
-                const res = await fetch('/api/quizzes.php', {
-                    method: 'POST',
-                    body: formData
-                });
+                const res = await fetch('/api/quizzes.php', { method: 'POST', body: formData });
                 const data = await res.json();
                 if (data.success) {
                     showNotification('Quiz updated!', 'success');
                     closeModal('editQuizModal');
                     setTimeout(() => location.reload(), 500);
-                } else {
-                    showNotification(data.message || 'Error updating quiz', 'error');
-                }
-            } catch (e) {
-                showNotification('Error: ' + e.message, 'error');
-            }
+                } else { showNotification(data.message || 'Error updating quiz', 'error'); }
+            } catch (e) { showNotification('Error: ' + e.message, 'error'); }
         }
 
         async function toggleQuizPublish(id, newStatus) {
@@ -1428,26 +1445,18 @@ if ($section === 'notifications') {
             formData.append('action', 'toggle_publish');
             formData.append('id', id);
             formData.append('is_published', newStatus);
-            formData.append('csrf_token', document.querySelector('input[name=\"csrf_token\"]').value);
+            formData.append('csrf_token', document.querySelector('input[name="csrf_token"]').value);
 
             try {
-                const res = await fetch('/api/quizzes.php', {
-                    method: 'POST',
-                    body: formData
-                });
+                const res = await fetch('/api/quizzes.php', { method: 'POST', body: formData });
                 const data = await res.json();
                 if (data.success) {
                     showNotification(data.message, 'success');
                     setTimeout(() => location.reload(), 300);
-                } else {
-                    showNotification(data.message || 'Error', 'error');
-                }
-            } catch (e) {
-                showNotification('Error: ' + e.message, 'error');
-            }
+                } else { showNotification(data.message || 'Error', 'error'); }
+            } catch (e) { showNotification('Error: ' + e.message, 'error'); }
         }
 
-        // Grading
         function gradeSubmission(id, maxMarks) {
             document.getElementById('gradeSubmissionId').value = id;
             document.getElementById('gradeMarks').max = maxMarks;
@@ -1458,32 +1467,22 @@ if ($section === 'notifications') {
 
         async function submitGrade() {
             const form = document.getElementById('gradeForm');
-            if (!form.checkValidity()) {
-                form.reportValidity();
-                return;
-            }
+            if (!form.checkValidity()) { form.reportValidity(); return; }
             const formData = new FormData(form);
+            // تطابق كامل مع كيس الـ grade الفعلي في السيرفر
             formData.append('action', 'grade');
 
             try {
-                const res = await fetch('/api/assignments.php', {
-                    method: 'POST',
-                    body: formData
-                });
+                const res = await fetch('/api/assignments.php', { method: 'POST', body: formData });
                 const data = await res.json();
                 if (data.success) {
                     showNotification('Grade submitted!', 'success');
                     closeModal('gradeModal');
                     setTimeout(() => location.reload(), 500);
-                } else {
-                    showNotification(data.message || 'Error grading', 'error');
-                }
-            } catch (e) {
-                showNotification('Error grading: ' + e.message, 'error');
-            }
+                } else { showNotification(data.message || 'Error grading', 'error'); }
+            } catch (e) { showNotification('Error grading: ' + e.message, 'error'); }
         }
 
-        // TA Management
         function openAssignTaModal(courseId) {
             document.getElementById('assignTaCourseId').value = courseId;
             openModal('assignTaModal');
@@ -1491,52 +1490,37 @@ if ($section === 'notifications') {
 
         async function submitAssignTa() {
             const form = document.getElementById('assignTaForm');
-            if (!form.checkValidity()) {
-                form.reportValidity();
-                return;
-            }
+            if (!form.checkValidity()) { form.reportValidity(); return; }
             const formData = new FormData(form);
             formData.append('action', 'assign_ta');
 
             try {
-                const res = await fetch('/api/courses.php', {
-                    method: 'POST',
-                    body: formData
-                });
+                const res = await fetch('/api/courses.php', { method: 'POST', body: formData });
                 const data = await res.json();
                 if (data.success) {
                     showNotification('TA assigned successfully!', 'success');
                     closeModal('assignTaModal');
                     setTimeout(() => location.reload(), 500);
-                } else {
-                    showNotification(data.message || 'Error assigning TA', 'error');
-                }
-            } catch (e) {
-                showNotification('Error: ' + e.message, 'error');
-            }
+                } else { showNotification(data.message || 'Error assigning TA', 'error'); }
+            } catch (e) { showNotification('Error: ' + e.message, 'error'); }
         }
 
         async function removeTa(courseId, taId, taName) {
-            confirmDelete('Remove \"' + taName + '\" from this course?', async () => {
+            confirmDelete('Remove "' + taName + '" from this course?', async () => {
                 const formData = new FormData();
                 formData.append('action', 'remove_ta');
                 formData.append('course_id', courseId);
                 formData.append('ta_id', taId);
-                formData.append('csrf_token', document.querySelector('input[name=\"csrf_token\"]').value);
+                formData.append('csrf_token', document.querySelector('input[name="csrf_token"]').value);
 
                 try {
-                    const res = await fetch('/api/courses.php', {
-                        method: 'POST',
-                        body: formData
-                    });
+                    const res = await fetch('/api/courses.php', { method: 'POST', body: formData });
                     const data = await res.json();
                     if (data.success) {
                         showNotification('TA removed!', 'success');
                         setTimeout(() => location.reload(), 500);
                     } else showNotification(data.message || 'Error removing TA', 'error');
-                } catch (e) {
-                    showNotification('Error: ' + e.message, 'error');
-                }
+                } catch (e) { showNotification('Error: ' + e.message, 'error'); }
             });
         }
     </script>
