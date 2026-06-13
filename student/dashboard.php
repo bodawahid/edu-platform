@@ -1045,22 +1045,23 @@ if ($section === 'grades') {
                    
 <script>
 /**
- * QuizTimer Class - Manages quiz countdown timer
- * Uses server-synced time to prevent client-side tampering
+ * ═══════════════════════════════════════════════════════════════
+ * QuizTimer Class — FIXED: Server-synced, persists on reload
+ * ═══════════════════════════════════════════════════════════════
  */
 class QuizTimer {
-    constructor(durationMinutes, displayElement, onExpireCallback) {
-        this.durationSeconds = durationMinutes * 60;
+    constructor(displayElement, onExpireCallback) {
         this.displayElement = displayElement;
         this.onExpire = onExpireCallback;
-        this.remainingSeconds = this.durationSeconds;
+        this.remainingSeconds = 0;
         this.intervalId = null;
         this.isRunning = false;
         this.hasExpired = false;
     }
 
-    start() {
+    start(seconds) {
         if (this.isRunning) return;
+        this.remainingSeconds = Math.max(0, seconds);
         this.isRunning = true;
         this.render();
         this.intervalId = setInterval(() => this.tick(), 1000);
@@ -1099,8 +1100,6 @@ class QuizTimer {
 
         if (this.displayElement) {
             this.displayElement.textContent = timeStr;
-
-            // Visual warnings
             if (this.remainingSeconds <= 60) {
                 this.displayElement.style.color = '#ef4444';
                 this.displayElement.style.fontWeight = '700';
@@ -1109,14 +1108,15 @@ class QuizTimer {
             }
         }
 
-        // Update page title for visibility
         if (this.remainingSeconds <= 60 && this.remainingSeconds > 0) {
             document.title = `⏰ ${timeStr} - Quiz`;
         }
     }
 }
 
-// ── Quiz Interface Controller ──
+// ═══════════════════════════════════════════════════════════════
+// Quiz Interface Controller — FIXED: Call start_attempt FIRST
+// ═══════════════════════════════════════════════════════════════
 (function() {
     const quizForm = document.getElementById('quizForm');
     const submitBtn = document.getElementById('submitQuizBtn');
@@ -1124,52 +1124,71 @@ class QuizTimer {
 
     if (!quizForm || !timerDisplay) return;
 
-    // Configuration from PHP
-    const durationMinutes = <?= (int)$quizDetail['duration_minutes'] ?>;
     const quizId = <?= (int)$quizDetail['id'] ?>;
     const totalMarks = <?= (float)$quizDetail['total_marks'] ?>;
+    const defaultDurationMinutes = <?= (int)$quizDetail['duration_minutes'] ?>;
 
-    // Submission lock to prevent double-submit
     let isSubmitting = false;
+    let quizTimer = null;
+    let attemptStarted = false;
 
-    // Initialize timer
-    const quizTimer = new QuizTimer(durationMinutes, timerDisplay, function() {
-        if (!isSubmitting) {
-            showToast("warning', 'Time's up!', 'Your quiz is being auto-submitted...");
-            submitQuizAnswers(true);
+    // ═══════════════════════════════════════════════════════════════
+    // STEP 1: Call start_attempt API to get/create attempt
+    // This ensures timer is synced with server on every page load
+    // ═══════════════════════════════════════════════════════════════
+    async function initQuiz() {
+        const startData = new FormData();
+        startData.append('action', 'start_attempt');
+        startData.append('quiz_id', quizId);
+        startData.append('csrf_token', document.querySelector('input[name="csrf_token"]').value);
+
+        try {
+            const res = await fetch('/api/quizzes.php', {
+                method: 'POST',
+                body: startData
+            });
+
+            const data = await res.json();
+
+            if (!data.success) {
+                showToast('error', 'Quiz Error', data.message || 'Could not start quiz attempt.');
+                if (data.message && (data.message.includes('already completed') || data.message.includes('ended'))) {
+                    setTimeout(() => window.location.href = '?section=grades', 2000);
+                }
+                return;
+            }
+
+            // Use server-provided remaining time (handles reload case)
+            const remainingSeconds = data.remaining_seconds ?? (data.duration_minutes * 60);
+
+            quizTimer = new QuizTimer(timerDisplay, function() {
+                if (!isSubmitting) {
+                    showToast('warning', "Time's up!", 'Your quiz is being auto-submitted...');
+                    submitQuizAnswers(true);
+                }
+            });
+
+            quizTimer.start(remainingSeconds);
+            attemptStarted = true;
+
+        } catch (err) {
+            console.error('Start attempt error:', err);
+            showToast('warning', 'Connection Issue', 'Starting with default timer. Please check your connection.');
+            quizTimer = new QuizTimer(timerDisplay, function() {
+                if (!isSubmitting) submitQuizAnswers(true);
+            });
+            quizTimer.start(defaultDurationMinutes * 60);
         }
-    });
+    }
 
-    // Start timer immediately
-    quizTimer.start();
-
-    // Register attempt start with server
-    const startData = new FormData();
-    startData.append('action', 'start_attempt');
-    startData.append('quiz_id', quizId);
-    startData.append('csrf_token', document.querySelector('input[name="csrf_token"]').value);
-
-    fetch('/api/quizzes.php', {
-        method: 'POST',
-        body: startData
-    })
-    .then(res => res.json())
-    .then(data => {
-        if (!data.success) {
-            console.error('Failed to start attempt:', data.message);
-            showToast('error', 'Quiz Error', data.message || 'Could not start quiz attempt.');
-        }
-    })
-    .catch(err => {
-        console.error('Start attempt error:', err);
-    });
+    // Start the quiz immediately
+    initQuiz();
 
     // Handle manual submit
     quizForm.addEventListener('submit', function(e) {
         e.preventDefault();
-        if (isSubmitting) return;
+        if (isSubmitting || !attemptStarted) return;
 
-        // Check if all questions answered
         const totalQuestions = quizForm.querySelectorAll('.quiz-question-card').length;
         const answeredQuestions = quizForm.querySelectorAll('input[type="radio"]:checked').length;
 
@@ -1188,16 +1207,16 @@ class QuizTimer {
         if (isSubmitting) return;
         isSubmitting = true;
 
-        quizTimer.stop();
+        if (quizTimer) quizTimer.stop();
 
-        // Disable form
+        // Create FormData BEFORE disabling inputs (disabled inputs are excluded from FormData)
+        const formData = new FormData(quizForm);
+
         submitBtn.disabled = true;
         submitBtn.innerHTML = '<div class="spinner"></div> Submitting…';
         quizForm.querySelectorAll('input').forEach(el => el.disabled = true);
-
-        const formData = new FormData(quizForm);
         formData.append('action', 'submit_attempt');
-        formData.append('time_remaining', quizTimer.getRemainingSeconds());
+        formData.append('time_remaining', quizTimer ? quizTimer.getRemainingSeconds() : 0);
         formData.append('auto_submitted', autoSubmitted ? '1' : '0');
 
         try {
@@ -1209,16 +1228,14 @@ class QuizTimer {
             const data = await res.json();
 
             if (data.success) {
-                const scoreText = data.score !== undefined 
+                const scoreText = data.score !== undefined
                     ? `Your score: ${data.score} / ${totalMarks} (${data.percentage}%)`
                     : 'Quiz submitted successfully!';
 
                 showToast('success', 'Quiz Submitted!', scoreText);
-
-                // Redirect after delay
                 setTimeout(() => {
                     window.location.href = '?section=grades';
-                }, 2000);
+                }, 2500);
             } else {
                 isSubmitting = false;
                 showToast('error', 'Submission Failed', data.message || 'Please try again.');
@@ -1226,9 +1243,8 @@ class QuizTimer {
                 submitBtn.innerHTML = 'Submit Quiz';
                 quizForm.querySelectorAll('input').forEach(el => el.disabled = false);
 
-                // Restart timer if not expired
-                if (!quizTimer.hasExpired) {
-                    quizTimer.start();
+                if (quizTimer && !quizTimer.hasExpired) {
+                    quizTimer.start(quizTimer.getRemainingSeconds());
                 }
             }
         } catch (err) {
@@ -1239,15 +1255,15 @@ class QuizTimer {
             submitBtn.innerHTML = 'Submit Quiz';
             quizForm.querySelectorAll('input').forEach(el => el.disabled = false);
 
-            if (!quizTimer.hasExpired) {
-                quizTimer.start();
+            if (quizTimer && !quizTimer.hasExpired) {
+                quizTimer.start(quizTimer.getRemainingSeconds());
             }
         }
     }
 
     // Warn before leaving page
     window.addEventListener('beforeunload', function(e) {
-        if (!isSubmitting && quizTimer.isRunning && quizTimer.remainingSeconds > 0) {
+        if (!isSubmitting && quizTimer && quizTimer.isRunning && quizTimer.remainingSeconds > 0) {
             e.preventDefault();
             e.returnValue = 'You have an active quiz in progress. Are you sure you want to leave?';
             return e.returnValue;
@@ -1261,8 +1277,6 @@ class QuizTimer {
             card.querySelectorAll('.option-item').forEach(o => o.classList.remove('selected'));
         }
         el.classList.add('selected');
-
-        // Auto-check the radio
         const radio = el.querySelector('input[type="radio"]');
         if (radio) radio.checked = true;
     };

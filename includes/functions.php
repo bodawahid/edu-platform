@@ -1,13 +1,27 @@
 <?php
- date_default_timezone_set('Africa/Cairo'); // تأكد من ضبطها لتناسب منطقتك
+date_default_timezone_set('Africa/Cairo');
 /**
  * Faculty of Engineering - AI WAF Middleware + Functions
+ * FIXED: Session handling (start ONCE), CSRF, Timer logic, Timezone sync
  */
 
-// 1️⃣ استدعي ملف الداتا بيز والـ Session أول حاجة خالص عشان الكلاسات تكون جاهزة
+// ═══════════════════════════════════════════════════════════════
+// 1️⃣ SESSION HANDLING — Start ONCE at the very top, before ANY output
+// ═══════════════════════════════════════════════════════════════
+if (session_status() === PHP_SESSION_NONE) {
+    session_start([
+        'cookie_lifetime' => 0,
+        'cookie_path' => '/',
+        'cookie_secure' => false,      // Set to true if using HTTPS
+        'cookie_httponly' => true,
+        'cookie_samesite' => 'Lax',
+        'use_strict_mode' => true,
+    ]);
+}
+
+// 2️⃣ Database + Functions
 require_once __DIR__ . '/db.php';
 
-if (session_status() === PHP_SESSION_NONE) session_start();
 // ========== AI THREAT DETECTION MIDDLEWARE ==========
 class AIThreatDetectionMiddleware
 {
@@ -16,37 +30,31 @@ class AIThreatDetectionMiddleware
     private const TIMEOUT_MS = 2000;
     private static bool $hasRun = false;
 
-public static function handleGlobalRequest(): void
-{
-    // أضف هذا الجزء في البداية تماماً
-    $uri = strtolower($_SERVER['REQUEST_URI'] ?? '');
-    if (str_contains($uri, 'api/quizzes.php')) {
-        return; 
-    }
-    
-    if (self::$hasRun || PHP_SAPI === 'cli') return;
-        self::$hasRun = true;
-
-        // 1️⃣ تأمين بدء الـ Session لو مكنتش بدأت عشان نعرف نخزن البصمة
-        if (session_status() === PHP_SESSION_NONE) {
-            session_start();
+    public static function handleGlobalRequest(): void
+    {
+        // Skip for API endpoints to avoid blocking quiz submissions
+        $uri = strtolower($_SERVER['REQUEST_URI'] ?? '');
+        if (str_contains($uri, 'api/quizzes.php') || str_contains($uri, 'api/assignments.php')) {
+            return;
         }
+
+        if (self::$hasRun || PHP_SAPI === 'cli') return;
+        self::$hasRun = true;
 
         $method = strtoupper($_SERVER['REQUEST_METHOD'] ?? 'GET');
         if (!in_array($method, ['GET', 'POST'], true)) return;
 
-        // 2️⃣ فلترة ريكويستات الأيقونات والصور تماماً
-        $uri = strtolower($_SERVER['REQUEST_URI'] ?? '');
-        if (str_contains($uri, 'favicon.ico') || preg_match('/\.(png|jpg|jpeg|gif|css|js|ico)$/', $uri)) {
+        // Skip static assets
+        if (preg_match('/\.(png|jpg|jpeg|gif|css|js|ico|svg|woff|woff2|ttf|eot)$/', $uri)) {
             return;
         }
 
         $getData  = $_GET  ?? [];
         $postData = $_POST ?? [];
-        
+
         $rawBody = file_get_contents('php://input');
         $bodyData = [];
-        
+
         if (!empty($rawBody)) {
             $contentType = strtolower($_SERVER['CONTENT_TYPE'] ?? '');
             if (str_contains($contentType, 'application/json')) {
@@ -58,11 +66,11 @@ public static function handleGlobalRequest(): void
             }
         }
 
-        $finalPost = array_merge($_POST, $postData, $bodyData);
+        $finalPost = array_merge($postData, $bodyData);
 
         $payload = [
             'request_uri' => $_SERVER['REQUEST_URI'] ?? '',
-            'query_string' => $_SERVER['QUERY_STRING'] ?? '', // أضف هذه السطر لالتقاط الـ Query String كاملة
+            'query_string' => $_SERVER['QUERY_STRING'] ?? '',
             'request_data' => [
                 'get'  => $getData,
                 'post' => $finalPost
@@ -73,23 +81,17 @@ public static function handleGlobalRequest(): void
         if ($prediction === null) return;
 
         if ($prediction['is_attack'] ?? false) {
-            // 3️⃣ صناعة بصمة فريدة للريكويست الحالي بناءً على الـ URI والداتا المبعوتة
             $requestFingerprint = md5($_SERVER['REQUEST_URI'] . json_encode($finalPost));
-            
-            // لو البصمة دي لسه مسجلينها من أقل من 3 ثواني، يبقى ده ريكويست مكرر من المتصفح
-            if (isset($_SESSION['last_attack_fingerprint']) && 
-                $_SESSION['last_attack_fingerprint'] === $requestFingerprint && 
+
+            if (isset($_SESSION['last_attack_fingerprint']) &&
+                $_SESSION['last_attack_fingerprint'] === $requestFingerprint &&
                 (time() - ($_SESSION['last_attack_time'] ?? 0)) <= 3) {
-                
-                // اطرده فوراً بره من غير ما تكتب في الداتا بيز تاني!
                 self::blockRequest($prediction);
             }
-            
-            // 4️⃣ لو أول مرة يشوف الأتاك ده، سجل البصمة والوقت في الـ Session
+
             $_SESSION['last_attack_fingerprint'] = $requestFingerprint;
             $_SESSION['last_attack_time'] = time();
 
-            // اكتب في الداتا بيز واطرده
             self::logAttackToDatabase($prediction, $payload);
             self::blockRequest($prediction);
         }
@@ -113,7 +115,7 @@ public static function handleGlobalRequest(): void
         curl_close($ch);
 
         if ($response === false) return null;
-        
+
         $decoded = json_decode($response, true);
         return is_array($decoded) ? $decoded : null;
     }
@@ -122,17 +124,16 @@ public static function handleGlobalRequest(): void
     {
         try {
             $db = Database::getInstance();
-            
+
             $attackType = $prediction['attack_type'] ?? 'Unknown Attack';
             $confidence = $prediction['confidence'] ?? 0;
             $ipAddress = $_SERVER['REMOTE_ADDR'] ?? '::1';
             $requestUrl = $_SERVER['REQUEST_URI'] ?? '';
             $requestMethod = $_SERVER['REQUEST_METHOD'] ?? 'POST';
-            
-            // محاولة جلب اسم اليوزر المشبوه من حقول تسجيل الدخول المختلفة
-            $usernameAttempt = $payload['request_data']['post']['username'] ?? 
+
+            $usernameAttempt = $payload['request_data']['post']['username'] ??
                                $payload['request_data']['post']['username_or_email'] ?? NULL;
-            
+
             $description = "AI Shield Blocked a " . $attackType . " attempt. Payload: " . json_encode($payload['request_data'], JSON_UNESCAPED_UNICODE);
 
             $db->query(
@@ -149,8 +150,7 @@ public static function handleGlobalRequest(): void
                     $confidence
                 ]
             );
-        // جوه فانكشن logAttackToDatabase تحت سطر الـ INSERT بتاع الـ security_logs:
-        addNotification(null, 'admin', 'security', '🚨 New Attack Blocked', "Blocked a {$attackType} attempt from IP {$ipAddress}");
+            addNotification(null, 'admin', 'security', '🚨 New Attack Blocked', "Blocked a {$attackType} attempt from IP {$ipAddress}");
         } catch (Exception $e) {
             error_log("WAF DB Logging Failed: " . $e->getMessage());
         }
@@ -159,15 +159,13 @@ public static function handleGlobalRequest(): void
     private static function blockRequest(array $prediction): void
     {
         if (ob_get_level()) ob_clean();
-        
-        // بنرجع 403 صريحة للهيدرز عشان السيرفر يفهم
+
         http_response_code(403);
-        
+
         $attackType = htmlspecialchars($prediction['attack_type'] ?? 'Unknown');
         $confidence = htmlspecialchars(($prediction['confidence'] ?? 0) . '%');
         $timestamp = date('Y-m-d H:i:s');
-        
-        // مصفوفة الـ JSON بشكل نظيف لعرضها جوه التصميم
+
         $jsonPayload = json_encode([
             'error' => 'Security violation detected. Request blocked by AI WAF.',
             'attack_type' => $attackType,
@@ -176,8 +174,6 @@ public static function handleGlobalRequest(): void
             'timestamp' => $timestamp
         ], JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE);
 
-        // طباعة الشاشة السوداء الموحدة مباشرة من الـ PHP لكل الموقع
-        // طبع شاشة كاملة متكاملة تقتل أي Margin افتراضي للمتصفح
         echo "
         <!DOCTYPE html>
         <html lang='en'>
@@ -185,13 +181,7 @@ public static function handleGlobalRequest(): void
             <meta charset='UTF-8'>
             <title>Security Violation - AI Shield</title>
             <style>
-                html, body {
-                    margin: 0 !important;
-                    padding: 0 !important;
-                    background: #0d1117 !important;
-                    width: 100%;
-                    height: 100%;
-                }
+                html, body { margin: 0 !important; padding: 0 !important; background: #0d1117 !important; width: 100%; height: 100%; }
             </style>
         </head>
         <body>
@@ -209,18 +199,16 @@ public static function handleGlobalRequest(): void
         </body>
         </html>
         ";
-        
+
         exit;
     }
 }
 
-// ✅ تشغيل الـ WAF فوراً قبل أي عملية معالجة أخرى لصد الهجمات في أول خط دفاع
-AIThreatDetectionMiddleware::handleGlobalRequest();
-
-// ========== START SESSION ==========
-if (session_status() === PHP_SESSION_NONE) session_start();
-
-require_once __DIR__ . '/db.php';
+// ✅ Run WAF (but NOT for API endpoints — they handle their own security)
+$currentUri = strtolower($_SERVER['REQUEST_URI'] ?? '');
+if (!str_contains($currentUri, 'api/quizzes.php') && !str_contains($currentUri, 'api/assignments.php')) {
+    AIThreatDetectionMiddleware::handleGlobalRequest();
+}
 
 // ========== CSRF PROTECTION ==========
 
@@ -479,6 +467,7 @@ function logActivity($action, $entityType = null, $entityId = null, $description
         error_log("Activity log failed: " . $e->getMessage());
     }
 }
+
 function addNotification(?int $userId, ?string $roleTarget, string $type, string $title, string $message): bool {
     try {
         $db = Database::getInstance();
@@ -492,17 +481,16 @@ function addNotification(?int $userId, ?string $roleTarget, string $type, string
         return false;
     }
 }
+
 /**
  * دالة حساب حالة الموعد النهائي وتلوين الـ Badges
- * المطور: محمد وحيد
  */
-function getDeadlineStatus(string $deadlineTime): array 
+function getDeadlineStatus(string $deadlineTime): array
 {
     $deadlineTimestamp = strtotime($deadlineTime);
     $currentTimestamp = time();
     $diff = $deadlineTimestamp - $currentTimestamp;
 
-    // لو الوقت عدى خلاص
     if ($diff <= 0) {
         return [
             'class' => 'danger',
@@ -510,7 +498,6 @@ function getDeadlineStatus(string $deadlineTime): array
         ];
     }
 
-    // لو متبقي أقل من 24 ساعة
     if ($diff <= 86400) {
         $hours = round($diff / 3600);
         return [
@@ -519,15 +506,14 @@ function getDeadlineStatus(string $deadlineTime): array
         ];
     }
 
-    // لو لسه بدري (أكتر من يوم)
     return [
         'class' => 'success',
         'text' => date('M j, g:i A', $deadlineTimestamp)
     ];
 }
+
 /**
- * دالة التحقق من الحقول الإجبارية لمنع كراش السيرفر
- * المطور: محمد وحيد
+ * دالة التحقق من الحقول الإجبارية
  */
 function validateRequired(array $fields, array $data): array {
     $errors = [];
