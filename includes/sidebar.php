@@ -48,7 +48,7 @@ $section = $_GET['section'] ?? 'dashboard';
 
 <aside class="sidebar" id="sidebar">
     <div class="sidebar-brand">
-        <div class="sidebar-brand-icon">FE</div>
+  <img src="/assets/images/BU_EN_LogoN.png" alt="Benha University" class="sidebar-brand-logo">
         <div class="sidebar-brand-text">
             Faculty of Engineering<br>
             <small style="opacity:0.7">Benha University</small>

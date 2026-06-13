@@ -24,22 +24,30 @@ document.addEventListener('click', function(e) {
 function initTabs() {
     document.querySelectorAll('.tabs').forEach(tabContainer => {
         const buttons = tabContainer.querySelectorAll('.tab-btn');
-        const contents = tabContainer.parentElement.querySelectorAll('.tab-content');
 
         buttons.forEach(btn => {
             btn.addEventListener('click', () => {
                 const target = btn.dataset.tab;
+                // إيجاد الـ Wrapper الأب اللي بيحتوي على الـ Tabs والـ Content
+                const parentCard = btn.closest('.card-body'); 
+                
+                // تنظيف الـ Active Classes
+                tabContainer.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+                parentCard.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
 
-                buttons.forEach(b => b.classList.remove('active'));
-                contents.forEach(c => c.classList.remove('active'));
-
+                // تفعيل المختار
                 btn.classList.add('active');
-                const targetContent = tabContainer.parentElement.querySelector(`#tab-${target}`);
-                if (targetContent) targetContent.classList.add('active');
+                const targetContent = parentCard.querySelector(`#tab-${target}`);
+                if (targetContent) {
+                    targetContent.classList.add('active');
+                }
             });
         });
     });
 }
+
+// اتأكد إنك بتنادي الدالة دي بعد ما الصفحة تحمل
+document.addEventListener('DOMContentLoaded', initTabs);
 
 // ========== MODAL ==========
 function openModal(modalId) {
@@ -163,36 +171,20 @@ class QuizTimer {
 
 // ========== FILE UPLOAD ==========
 function initFileUpload() {
-    document.querySelectorAll('.upload-zone').forEach(zone => {
-        const input = zone.querySelector('input[type="file"]');
-        const fileList = zone.closest('form')?.querySelector('.file-list');
+    const uploadZone = document.getElementById('uploadZone');
+    const fileInput = document.getElementById('submissionFile');
 
-        zone.addEventListener('click', () => input?.click());
-
-        zone.addEventListener('dragover', (e) => {
-            e.preventDefault();
-            zone.classList.add('dragover');
-        });
-
-        zone.addEventListener('dragleave', () => {
-            zone.classList.remove('dragover');
-        });
-
-        zone.addEventListener('drop', (e) => {
-            e.preventDefault();
-            zone.classList.remove('dragover');
-            if (input && e.dataTransfer.files.length) {
-                input.files = e.dataTransfer.files;
-                updateFileList(e.dataTransfer.files, fileList);
+    if (uploadZone && fileInput) {
+        // إزالة أي listeners قديمة إذا لزم الأمر
+        uploadZone.onclick = null; 
+        
+        uploadZone.addEventListener('click', function(e) {
+            // نتحقق أن الضغط لم يكن على الـ input نفسه لتجنب التكرار
+            if (e.target !== fileInput) {
+                fileInput.click();
             }
         });
-
-        input?.addEventListener('change', () => {
-            if (input.files.length) {
-                updateFileList(input.files, fileList);
-            }
-        });
-    });
+    }
 }
 
 function updateFileList(files, container) {
@@ -249,10 +241,7 @@ function sortTable(tableId, columnIndex) {
 }
 
 // ========== INITIALIZATION ==========
-document.addEventListener('DOMContentLoaded', () => {
-    initTabs();
-    initFileUpload();
-});
+document.addEventListener('DOMContentLoaded', initFileUpload);
 
 // ========== LOGOUT ==========
 async function logout() {
@@ -357,4 +346,33 @@ document.addEventListener("DOMContentLoaded", function () {
 
     fetchLiveNotifications();
     setInterval(fetchLiveNotifications, 10000); // لف كل 10 ثواني
+});
+function openNewsModal(id, title, content, image, category, date) {
+    document.getElementById('modalImage').src = image;
+    document.getElementById('modalImage').alt = category;
+    document.getElementById('modalCategory').textContent = category;
+    document.getElementById('modalTitle').textContent = title;
+    document.getElementById('modalDate').textContent = date;
+    document.getElementById('modalContent').textContent = content;
+    document.getElementById('newsModal').classList.add('active');
+    document.body.style.overflow = 'hidden';
+}
+
+function closeNewsModal() {
+    document.getElementById('newsModal').classList.remove('active');
+    document.body.style.overflow = '';
+}
+
+// Close modal on outside click
+document.getElementById('newsModal').addEventListener('click', function(e) {
+    if (e.target === this) {
+        closeNewsModal();
+    }
+});
+
+// Close on Escape key
+document.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') {
+        closeNewsModal();
+    }
 });

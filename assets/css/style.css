@@ -1496,3 +1496,44 @@ td .btn {
 @keyframes spin {
     to { transform: rotate(360deg); }
 }
+.landing-hero {
+    position: relative;
+    padding: 120px 40px;
+    background-image: linear-gradient(rgba(30, 58, 95, 0.85), rgba(30, 58, 95, 0.85)), url('/assets/images/benha.jpg');
+    background-size: cover;
+    background-position: center;
+    background-attachment: fixed; /* يعطي تأثير الـ parallax الجميل */
+    text-align: center;
+    color: #fff;
+    min-height: 60vh;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+}
+
+.landing-hero-container {
+    max-width: 800px;
+    z-index: 1;
+}
+
+.landing-hero h1 {
+    font-size: 3rem;
+    margin-bottom: 20px;
+    text-shadow: 0 2px 4px rgba(0,0,0,0.3);
+}
+
+.landing-hero p {
+    font-size: 1.1rem;
+    margin-bottom: 30px;
+    line-height: 1.6;
+    opacity: 0.9;
+}
+.sidebar-brand-logo {
+    width: 40px;
+    height: 40px;
+    object-fit: contain;
+    border-radius: 6px;
+    background: rgba(255,255,255,0.1);
+    padding: 4px;
+}
