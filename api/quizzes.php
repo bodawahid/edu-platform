@@ -2,8 +2,22 @@
 date_default_timezone_set('Africa/Cairo');
 /**
  * Quizzes API - CRUD Operations
- * Fixed version: proper validation, timezone handling, submission locking
+ * FIXED: Session handling, CSRF validation, timer persistence, timezone, FOR UPDATE removed
  */
+
+// ═══════════════════════════════════════════════════════════════
+// 1️⃣ Start session BEFORE any output — critical for CSRF
+// ═══════════════════════════════════════════════════════════════
+if (session_status() === PHP_SESSION_NONE) {
+    session_start([
+        'cookie_lifetime' => 0,
+        'cookie_path' => '/',
+        'cookie_secure' => false,
+        'cookie_httponly' => true,
+        'cookie_samesite' => 'Lax',
+        'use_strict_mode' => true,
+    ]);
+}
 
 require_once __DIR__ . '/../includes/functions.php';
 
@@ -45,9 +59,21 @@ if (!in_array($_SERVER['REQUEST_METHOD'], $allowedMethods, true)) {
     jsonResponse(['success' => false, 'message' => 'Invalid request method.'], 405);
 }
 
-// CSRF validation for all state-changing operations
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && !validateCSRFToken($_POST['csrf_token'] ?? '')) {
-    jsonResponse(['success' => false, 'message' => 'Invalid CSRF token.'], 403);
+// ═══════════════════════════════════════════════════════════════
+// 2️⃣ CSRF VALIDATION — Check token exists in session first
+// ═══════════════════════════════════════════════════════════════
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    $token = $_POST['csrf_token'] ?? '';
+    
+    if (empty($token)) {
+        error_log("CSRF Token missing. Session ID: " . session_id() . " | Session csrf_token exists: " . (isset($_SESSION['csrf_token']) ? 'yes' : 'no'));
+        jsonResponse(['success' => false, 'message' => 'CSRF token missing. Please refresh the page.'], 403);
+    }
+    
+    if (!validateCSRFToken($token)) {
+        error_log("CSRF Token invalid. Provided: " . substr($token, 0, 8) . "... | Session: " . substr($_SESSION['csrf_token'] ?? 'EMPTY', 0, 8) . "...");
+        jsonResponse(['success' => false, 'message' => 'Invalid CSRF token. Please refresh the page.'], 403);
+    }
 }
 
 $db = Database::getInstance();
@@ -81,7 +107,6 @@ try {
                 jsonResponse(['success' => false, 'message' => 'Passing marks cannot exceed total marks.'], 400);
             }
 
-            // Validate datetime format
             if (!empty($startTime) && !strtotime($startTime)) {
                 jsonResponse(['success' => false, 'message' => 'Invalid start time format.'], 400);
             }
@@ -100,8 +125,7 @@ try {
 
             $newId = $db->lastInsertId();
             logActivity('quiz_created', 'quiz', $newId, "Created quiz: $title");
-
-addNotification(null, 'student', 'quiz', '📝 New Quiz Added', "Dr. posted a new quiz: \"{$title}\". Check your schedule.");
+            addNotification(null, 'student', 'quiz', '📝 New Quiz Added', "Dr. posted a new quiz: \"{$title}\". Check your schedule.");
             jsonResponse(['success' => true, 'message' => 'Quiz created successfully.', 'id' => $newId]);
             break;
 
@@ -117,7 +141,6 @@ addNotification(null, 'student', 'quiz', '📝 New Quiz Added', "Dr. posted a ne
                 jsonResponse(['success' => false, 'message' => 'Quiz ID and question text are required.'], 400);
             }
 
-            // Verify quiz exists and user has permission
             $quiz = $db->query("SELECT created_by FROM quizzes WHERE id = ?", [$quizId])->fetch();
             if (!$quiz) {
                 jsonResponse(['success' => false, 'message' => 'Quiz not found.'], 404);
@@ -183,7 +206,6 @@ addNotification(null, 'student', 'quiz', '📝 New Quiz Added', "Dr. posted a ne
                 jsonResponse(['success' => false, 'message' => 'Question ID and text are required.'], 400);
             }
 
-            // Verify ownership
             $question = $db->query("SELECT q.*, quiz.created_by FROM questions q JOIN quizzes quiz ON q.quiz_id = quiz.id WHERE q.id = ?", [$id])->fetch();
             if (!$question) {
                 jsonResponse(['success' => false, 'message' => 'Question not found.'], 404);
@@ -207,7 +229,6 @@ addNotification(null, 'student', 'quiz', '📝 New Quiz Added', "Dr. posted a ne
                 jsonResponse(['success' => false, 'message' => 'Invalid question ID.'], 400);
             }
 
-            // Verify ownership before delete
             $question = $db->query("SELECT q.*, quiz.created_by FROM questions q JOIN quizzes quiz ON q.quiz_id = quiz.id WHERE q.id = ?", [$id])->fetch();
             if (!$question) {
                 jsonResponse(['success' => false, 'message' => 'Question not found.'], 404);
@@ -244,23 +265,23 @@ addNotification(null, 'student', 'quiz', '📝 New Quiz Added', "Dr. posted a ne
 
             if (!empty($_POST['title'])) { $fields[] = "title = ?"; $params[] = sanitizeInput($_POST['title'], 'string'); }
             if (isset($_POST['description'])) { $fields[] = "description = ?"; $params[] = sanitizeInput($_POST['description'], 'string'); }
-            if (isset($_POST['duration_minutes'])) { 
+            if (isset($_POST['duration_minutes'])) {
                 $val = filter_input(INPUT_POST, 'duration_minutes', FILTER_VALIDATE_INT);
                 if ($val !== false && $val > 0) { $fields[] = "duration_minutes = ?"; $params[] = $val; }
             }
-            if (isset($_POST['total_marks'])) { 
+            if (isset($_POST['total_marks'])) {
                 $val = filter_input(INPUT_POST, 'total_marks', FILTER_VALIDATE_FLOAT);
                 if ($val !== false && $val > 0) { $fields[] = "total_marks = ?"; $params[] = $val; }
             }
-            if (isset($_POST['passing_marks'])) { 
+            if (isset($_POST['passing_marks'])) {
                 $val = filter_input(INPUT_POST, 'passing_marks', FILTER_VALIDATE_FLOAT);
                 if ($val !== false && $val >= 0) { $fields[] = "passing_marks = ?"; $params[] = $val; }
             }
             if (isset($_POST['start_time'])) { $fields[] = "start_time = ?"; $params[] = $_POST['start_time']; }
             if (isset($_POST['end_time'])) { $fields[] = "end_time = ?"; $params[] = $_POST['end_time']; }
-            if (isset($_POST['is_published'])) { 
-                $fields[] = "is_published = ?"; 
-                $params[] = filter_input(INPUT_POST, 'is_published', FILTER_VALIDATE_INT) ? 1 : 0; 
+            if (isset($_POST['is_published'])) {
+                $fields[] = "is_published = ?";
+                $params[] = filter_input(INPUT_POST, 'is_published', FILTER_VALIDATE_INT) ? 1 : 0;
             }
 
             if (empty($fields)) jsonResponse(['success' => false, 'message' => 'No fields to update.'], 400);
@@ -290,7 +311,8 @@ addNotification(null, 'student', 'quiz', '📝 New Quiz Added', "Dr. posted a ne
             logActivity('quiz_publish_toggled', 'quiz', $id, "Quiz $id $statusText");
 
             if ($isPublished && !$existing['is_published']) {
-addNotification(null, 'student', 'quiz', '📝 Quiz Published', "Quiz \"{$existing['title']}\" is now published and ready to take.");            }
+                addNotification(null, 'student', 'quiz', '📝 Quiz Published', "Quiz \"{$existing['title']}\" is now published and ready to take.");
+            }
 
             jsonResponse(['success' => true, 'message' => 'Quiz ' . $statusText . ' successfully.']);
             break;
@@ -306,7 +328,6 @@ addNotification(null, 'student', 'quiz', '📝 Quiz Published', "Quiz \"{$existi
 
             $db->beginTransaction();
             try {
-                // Delete related records first
                 $db->query("DELETE FROM quiz_answers WHERE attempt_id IN (SELECT id FROM quiz_attempts WHERE quiz_id = ?)", [$id]);
                 $db->query("DELETE FROM quiz_attempts WHERE quiz_id = ?", [$id]);
                 $db->query("DELETE FROM question_options WHERE question_id IN (SELECT id FROM questions WHERE quiz_id = ?)", [$id]);
@@ -332,7 +353,6 @@ addNotification(null, 'student', 'quiz', '📝 Quiz Published', "Quiz \"{$existi
                 jsonResponse(['success' => false, 'message' => 'Quiz ID required.'], 400);
             }
 
-            // Verify quiz is published and available
             $quiz = $db->query(
                 "SELECT q.*, c.course_name FROM quizzes q
                  JOIN courses c ON q.course_id = c.id
@@ -344,7 +364,6 @@ addNotification(null, 'student', 'quiz', '📝 Quiz Published', "Quiz \"{$existi
                 jsonResponse(['success' => false, 'message' => 'Quiz not found or not available.'], 404);
             }
 
-            // Check if student is enrolled
             $enrolled = $db->query(
                 "SELECT 1 FROM course_enrollments WHERE course_id = ? AND student_id = ? AND status = 'active'",
                 [$quiz['course_id'], $user['id']]
@@ -354,7 +373,6 @@ addNotification(null, 'student', 'quiz', '📝 Quiz Published', "Quiz \"{$existi
                 jsonResponse(['success' => false, 'message' => 'You are not enrolled in this course.'], 403);
             }
 
-            // Check quiz timing
             $now = time();
             $startTime = strtotime($quiz['start_time']);
             $endTime = strtotime($quiz['end_time']);
@@ -366,7 +384,6 @@ addNotification(null, 'student', 'quiz', '📝 Quiz Published', "Quiz \"{$existi
                 jsonResponse(['success' => false, 'message' => 'Quiz has ended.'], 403);
             }
 
-            // Check if already completed
             $completed = $db->query(
                 "SELECT id FROM quiz_attempts WHERE quiz_id = ? AND student_id = ? AND status IN ('submitted', 'graded', 'auto_submitted')",
                 [$quizId, $user['id']]
@@ -376,39 +393,38 @@ addNotification(null, 'student', 'quiz', '📝 Quiz Published', "Quiz \"{$existi
                 jsonResponse(['success' => false, 'message' => 'You have already completed this quiz.'], 403);
             }
 
-            // Check for existing in-progress attempt
             $existing = $db->query(
-                "SELECT id, started_at FROM quiz_attempts WHERE quiz_id = ? AND student_id = ? AND status = 'in_progress'",
+                "SELECT id, started_at FROM quiz_attempts WHERE quiz_id = ? AND student_id = ? AND status = 'started'",
                 [$quizId, $user['id']]
             )->fetch();
 
             if ($existing) {
-                // Calculate remaining time based on duration
                 $startedAt = strtotime($existing['started_at']);
                 $elapsed = $now - $startedAt;
                 $durationSeconds = $quiz['duration_minutes'] * 60;
                 $remaining = max(0, $durationSeconds - $elapsed);
 
                 jsonResponse([
-                    'success' => true, 
-                    'attempt_id' => $existing['id'], 
+                    'success' => true,
+                    'attempt_id' => $existing['id'],
                     'message' => 'Continuing existing attempt.',
-                    'remaining_seconds' => $remaining
+                    'remaining_seconds' => $remaining,
+                    'duration_minutes' => $quiz['duration_minutes']
                 ]);
             }
 
-            // Create new attempt
             $db->query(
                 "INSERT INTO quiz_attempts (quiz_id, student_id, total_marks, ip_address, status, started_at)
-                 VALUES (?, ?, ?, ?, 'in_progress', NOW())",
+                 VALUES (?, ?, ?, ?, 'started', NOW())",
                 [$quizId, $user['id'], $quiz['total_marks'], $_SERVER['REMOTE_ADDR'] ?? '']
             );
 
             $attemptId = $db->lastInsertId();
             jsonResponse([
-                'success' => true, 
-                'attempt_id' => $attemptId, 
+                'success' => true,
+                'attempt_id' => $attemptId,
                 'message' => 'Quiz started!',
+                'remaining_seconds' => $quiz['duration_minutes'] * 60,
                 'duration_minutes' => $quiz['duration_minutes']
             ]);
             break;
@@ -427,7 +443,6 @@ addNotification(null, 'student', 'quiz', '📝 Quiz Published', "Quiz \"{$existi
                 jsonResponse(['success' => false, 'message' => 'No answers provided.'], 400);
             }
 
-            // Verify quiz exists and is published
             $quiz = $db->query(
                 "SELECT q.*, c.course_name FROM quizzes q
                  JOIN courses c ON q.course_id = c.id
@@ -439,7 +454,6 @@ addNotification(null, 'student', 'quiz', '📝 Quiz Published', "Quiz \"{$existi
                 jsonResponse(['success' => false, 'message' => 'Quiz not found or not available.'], 404);
             }
 
-            // Check enrollment
             $enrolled = $db->query(
                 "SELECT 1 FROM course_enrollments WHERE course_id = ? AND student_id = ? AND status = 'active'",
                 [$quiz['course_id'], $user['id']]
@@ -449,11 +463,10 @@ addNotification(null, 'student', 'quiz', '📝 Quiz Published', "Quiz \"{$existi
                 jsonResponse(['success' => false, 'message' => 'You are not enrolled in this course.'], 403);
             }
 
-            // Find existing attempt
+            // FIXED: Removed FOR UPDATE (causes issues on some MySQL configs)
             $attempt = $db->query(
-                "SELECT id, status, started_at FROM quiz_attempts 
-                 WHERE quiz_id = ? AND student_id = ? AND status = 'in_progress'
-                 FOR UPDATE",
+                "SELECT id, status, started_at FROM quiz_attempts
+                 WHERE quiz_id = ? AND student_id = ? AND status = 'started'",
                 [$quizId, $user['id']]
             )->fetch();
 
@@ -461,22 +474,28 @@ addNotification(null, 'student', 'quiz', '📝 Quiz Published', "Quiz \"{$existi
                 jsonResponse(['success' => false, 'message' => 'No active quiz attempt found. Please start the quiz first.'], 400);
             }
 
-            // Check if already submitted (race condition protection)
-            if ($attempt['status'] !== 'in_progress') {
+            if ($attempt['status'] !== 'started') {
                 jsonResponse(['success' => false, 'message' => 'Quiz already submitted.'], 400);
             }
 
-            // Validate time limit
             $startedAt = strtotime($attempt['started_at']);
             $elapsed = time() - $startedAt;
             $maxDuration = $quiz['duration_minutes'] * 60;
 
-            // Allow 30 seconds grace period for network latency
             if ($elapsed > ($maxDuration + 30)) {
                 jsonResponse(['success' => false, 'message' => 'Quiz time limit exceeded.'], 403);
             }
 
-            // Calculate score
+            // CRITICAL: Update status FIRST to prevent double-submit race
+            $db->query(
+                "UPDATE quiz_attempts SET status = 'submitted' WHERE id = ? AND status = 'started'",
+                [$attempt['id']]
+            );
+
+            if ($db->rowCount() === 0) {
+                jsonResponse(['success' => false, 'message' => 'Quiz already submitted by another request.'], 400);
+            }
+
             $totalScore = 0;
             $processedAnswers = 0;
 
@@ -499,7 +518,7 @@ addNotification(null, 'student', 'quiz', '📝 Quiz Published', "Quiz \"{$existi
                         "INSERT INTO quiz_answers (attempt_id, question_id, selected_answer, is_correct, marks_obtained)
                          VALUES (?, ?, ?, ?, ?)
                          ON DUPLICATE KEY UPDATE selected_answer = ?, is_correct = ?, marks_obtained = ?",
-                        [$attempt['id'], $questionId, $selectedAnswer, $isCorrect ? 1 : 0, $marksObtained, 
+                        [$attempt['id'], $questionId, $selectedAnswer, $isCorrect ? 1 : 0, $marksObtained,
                          $selectedAnswer, $isCorrect ? 1 : 0, $marksObtained]
                     );
                 }
@@ -510,32 +529,30 @@ addNotification(null, 'student', 'quiz', '📝 Quiz Published', "Quiz \"{$existi
 
             $status = $autoSubmitted ? 'auto_submitted' : 'submitted';
 
-            // Update attempt
             $db->query(
-                "UPDATE quiz_attempts 
-                 SET score = ?, percentage = ?, status = ?, submitted_at = NOW(), time_remaining_seconds = ?, auto_submitted = ?
+                "UPDATE quiz_attempts
+                 SET score = ?, percentage = ?, status = ?, submitted_at = NOW(), time_remaining_seconds = ?
                  WHERE id = ?",
-                [$totalScore, $percentage, $status, $timeRemaining, $autoSubmitted ? 1 : 0, $attempt['id']]
+                [$totalScore, $percentage, $status, $timeRemaining, $attempt['id']]
             );
 
-            logActivity('quiz_submitted', 'quiz_attempt', $attempt['id'], 
+            logActivity('quiz_submitted', 'quiz_attempt', $attempt['id'],
                 "Submitted quiz $quizId with score $totalScore/$totalMarks ($percentage%)");
 
-            // Notify instructor
             $studentName = htmlspecialchars($user['username'] ?? 'A student');
             $quizTitle = htmlspecialchars($quiz['title'] ?? 'Quiz');
             $instructorId = $quiz['created_by'] ?? null;
 
             if ($instructorId) {
-                addNotification($instructorId, 'doctor', 'quiz_submission', 
-                    '🎓 Quiz Attempt Submitted', 
+                addNotification($instructorId, 'doctor', 'quiz_submission',
+                    '🎓 Quiz Attempt Submitted',
                     "Student ({$studentName}) submitted \"{$quizTitle}\". Score: {$totalScore}/{$totalMarks}");
             }
 
             jsonResponse([
-                'success' => true, 
-                'message' => 'Quiz submitted successfully!', 
-                'score' => $totalScore, 
+                'success' => true,
+                'message' => 'Quiz submitted successfully!',
+                'score' => $totalScore,
                 'total_marks' => $totalMarks,
                 'percentage' => round($percentage, 2),
                 'status' => $status,
@@ -547,6 +564,6 @@ addNotification(null, 'student', 'quiz', '📝 Quiz Published', "Quiz \"{$existi
             jsonResponse(['success' => false, 'message' => 'Unknown action.'], 400);
     }
 } catch (Exception $e) {
-    error_log("Quiz API error: " . $e->getMessage());
-    jsonResponse(['success' => false, 'message' => 'An error occurred. Please try again.'], 500);
+    error_log("Quiz API error: " . $e->getMessage() . " | Trace: " . $e->getTraceAsString());
+    jsonResponse(['success' => false, 'message' => 'An error occurred: ' . $e->getMessage()], 500);
 }
