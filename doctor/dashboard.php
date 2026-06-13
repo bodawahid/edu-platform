@@ -391,7 +391,7 @@ if ($section === 'notifications') {
                     <div class="page-header">
                         <h1 class="page-title">Quiz Builder</h1>
                         <p class="page-subtitle">Create and manage quizzes</p>
-                        <button class="btn btn-primary" onclick="openModal('createQuizModal') style="margin-top: 12px;">
+                        <button class="btn btn-primary" onclick="openModal('createQuizModal')" style="margin-top: 12px;">
                             <span>&#10133;</span> Create New Quiz
                         </button>
                     </div>

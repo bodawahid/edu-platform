@@ -1,4 +1,5 @@
 <?php
+ date_default_timezone_set('Africa/Cairo'); // تأكد من ضبطها لتناسب منطقتك
 /**
  * Faculty of Engineering - AI WAF Middleware + Functions
  */
@@ -8,7 +9,6 @@ require_once __DIR__ . '/db.php';
 
 if (session_status() === PHP_SESSION_NONE) session_start();
 // ========== AI THREAT DETECTION MIDDLEWARE ==========
-
 class AIThreatDetectionMiddleware
 {
     private const SERVICE_URL = 'http://127.0.0.1:5005/predict';
@@ -17,8 +17,14 @@ class AIThreatDetectionMiddleware
     private static bool $hasRun = false;
 
 public static function handleGlobalRequest(): void
-    {
-        if (self::$hasRun || PHP_SAPI === 'cli') return;
+{
+    // أضف هذا الجزء في البداية تماماً
+    $uri = strtolower($_SERVER['REQUEST_URI'] ?? '');
+    if (str_contains($uri, 'api/quizzes.php')) {
+        return; 
+    }
+    
+    if (self::$hasRun || PHP_SAPI === 'cli') return;
         self::$hasRun = true;
 
         // 1️⃣ تأمين بدء الـ Session لو مكنتش بدأت عشان نعرف نخزن البصمة
@@ -56,6 +62,7 @@ public static function handleGlobalRequest(): void
 
         $payload = [
             'request_uri' => $_SERVER['REQUEST_URI'] ?? '',
+            'query_string' => $_SERVER['QUERY_STRING'] ?? '', // أضف هذه السطر لالتقاط الـ Query String كاملة
             'request_data' => [
                 'get'  => $getData,
                 'post' => $finalPost
