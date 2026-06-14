@@ -5,24 +5,12 @@ date_default_timezone_set('Africa/Cairo');
  * FIXED: Session handling (start ONCE), CSRF, Timer logic, Timezone sync
  */
 
-// ═══════════════════════════════════════════════════════════════
-// 1️⃣ SESSION HANDLING — Start ONCE at the very top, before ANY output
-// ═══════════════════════════════════════════════════════════════
-if (session_status() === PHP_SESSION_NONE) {
-    session_start([
-        'cookie_lifetime' => 0,
-        'cookie_path' => '/',
-        'cookie_secure' => false,      // Set to true if using HTTPS
-        'cookie_httponly' => true,
-        'cookie_samesite' => 'Lax',
-        'use_strict_mode' => true,
-    ]);
-}
-
-// 2️⃣ Database + Functions
 require_once __DIR__ . '/db.php';
 
+if (session_status() === PHP_SESSION_NONE) session_start();
+
 // ========== AI THREAT DETECTION MIDDLEWARE ==========
+
 class AIThreatDetectionMiddleware
 {
     private const SERVICE_URL = 'http://127.0.0.1:5005/predict';
@@ -32,29 +20,31 @@ class AIThreatDetectionMiddleware
 
     public static function handleGlobalRequest(): void
     {
-        // Skip for API endpoints to avoid blocking quiz submissions
-        $uri = strtolower($_SERVER['REQUEST_URI'] ?? '');
-        if (str_contains($uri, 'api/quizzes.php') || str_contains($uri, 'api/assignments.php')) {
-            return;
-        }
-
         if (self::$hasRun || PHP_SAPI === 'cli') return;
         self::$hasRun = true;
 
-        $method = strtoupper($_SERVER['REQUEST_METHOD'] ?? 'GET');
-        if (!in_array($method, ['GET', 'POST'], true)) return;
+        // 1️⃣ تأمين بدء الـ Session
+        if (session_status() === PHP_SESSION_NONE) {
+            session_start();
+        }
 
-        // Skip static assets
-        if (preg_match('/\.(png|jpg|jpeg|gif|css|js|ico|svg|woff|woff2|ttf|eot)$/', $uri)) {
+        $method = strtoupper($_SERVER['REQUEST_METHOD'] ?? 'GET');
+        
+        // فحص كل الـ methods الممكنة
+        if (!in_array($method, ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'], true)) return;
+
+        // 2️⃣ فلترة الملفات الثابتة فقط (assets)
+        $uri = strtolower($_SERVER['REQUEST_URI'] ?? '');
+        if (preg_match('/\.(png|jpg|jpeg|gif|css|js|ico|svg|woff|woff2|ttf|eot|pdf|zip)$/i', $uri)) {
             return;
         }
 
+        // 3️⃣ جمع كل البيانات من كل المصادر
         $getData  = $_GET  ?? [];
         $postData = $_POST ?? [];
-
         $rawBody = file_get_contents('php://input');
         $bodyData = [];
-
+        
         if (!empty($rawBody)) {
             $contentType = strtolower($_SERVER['CONTENT_TYPE'] ?? '');
             if (str_contains($contentType, 'application/json')) {
@@ -67,34 +57,124 @@ class AIThreatDetectionMiddleware
         }
 
         $finalPost = array_merge($postData, $bodyData);
+        
+        // 4️⃣ فحص الـ GET parameters بشكل صريح للـ Path Traversal
+        $allData = array_merge($getData, $finalPost);
+        
+        // فحص يدوي سريع للـ Path Traversal في الـ URL
+        $uriDecoded = urldecode($uri);
+        $pathTraversalPatterns = [
+            '/\.\.\//',           // ../
+            '/\.\.\\\\/',         // ..\
+            '/\.\.%2f/i',         // ..%2f
+            '/%2e%2e%2f/i',       // %2e%2e%2f
+            '/etc\/passwd/i',     // etc/passwd
+            '/windows\/system32/i',
+            '/\.\.\/\.\.\//',
+            '/\.\.%252f/i',       // double encoded
+        ];
+        
+        foreach ($pathTraversalPatterns as $pattern) {
+            if (preg_match($pattern, $uriDecoded)) {
+                self::blockRequest([
+                    'is_attack' => true,
+                    'attack_type' => 'Path Traversal',
+                    'confidence' => 100.0
+                ]);
+                return;
+            }
+        }
 
         $payload = [
             'request_uri' => $_SERVER['REQUEST_URI'] ?? '',
-            'query_string' => $_SERVER['QUERY_STRING'] ?? '',
             'request_data' => [
                 'get'  => $getData,
                 'post' => $finalPost
             ]
         ];
 
+        // 5️⃣ حاول الـ AI WAF، لو فشل، استخدم الفحص اليدوي
         $prediction = self::analyzeWithPythonService($payload);
+        
+        // لو الـ AI service مش شغال، نفحص يدوياً
+        if ($prediction === null) {
+            $prediction = self::manualThreatDetection($allData, $uri);
+        }
+        
         if ($prediction === null) return;
 
         if ($prediction['is_attack'] ?? false) {
+            // بصمة الريكويست
             $requestFingerprint = md5($_SERVER['REQUEST_URI'] . json_encode($finalPost));
-
-            if (isset($_SESSION['last_attack_fingerprint']) &&
-                $_SESSION['last_attack_fingerprint'] === $requestFingerprint &&
+            
+            if (isset($_SESSION['last_attack_fingerprint']) && 
+                $_SESSION['last_attack_fingerprint'] === $requestFingerprint && 
                 (time() - ($_SESSION['last_attack_time'] ?? 0)) <= 3) {
                 self::blockRequest($prediction);
             }
-
+            
             $_SESSION['last_attack_fingerprint'] = $requestFingerprint;
             $_SESSION['last_attack_time'] = time();
 
             self::logAttackToDatabase($prediction, $payload);
             self::blockRequest($prediction);
         }
+    }
+
+    /**
+     * فحص يدوي بديل لو الـ AI service مش شغال
+     */
+    private static function manualThreatDetection(array $data, string $uri): ?array
+    {
+        $flatData = json_encode($data) . ' ' . $uri;
+        $flatDataLower = strtolower($flatData);
+        
+        // SQL Injection patterns
+        $sqliPatterns = [
+            '/(\%27)|(\')|(\-\-)|(\%23)|(#)/i',
+            '/((\%3D)|(=))[^\n]*((\%27)|(\')|(\-\-)|(\%3B)|(;))/i',
+            '/\w*((\%27)|(\'))((\%6F)|o|(\%4F))((\%72)|r|(\%52))/i',
+            '/((\%27)|(\'))union/i',
+            '/exec(\s|\+)+(s|x)p\w+/i',
+            '/union\s+select/i',
+            '/insert\s+into/i',
+            '/delete\s+from/i',
+            '/drop\s+table/i',
+        ];
+        
+        foreach ($sqliPatterns as $pattern) {
+            if (preg_match($pattern, $flatDataLower)) {
+                return [
+                    'is_attack' => true,
+                    'attack_type' => 'SQL Injection',
+                    'confidence' => 85.0
+                ];
+            }
+        }
+        
+        // XSS patterns
+        $xssPatterns = [
+            '/<script\b[^>]*>/i',
+            '/javascript:/i',
+            '/on\w+\s*=/i',
+            '/<iframe/i',
+            '/<object/i',
+            '/<embed/i',
+            '/alert\s*\(/i',
+            '/document\.cookie/i',
+        ];
+        
+        foreach ($xssPatterns as $pattern) {
+            if (preg_match($pattern, $flatDataLower)) {
+                return [
+                    'is_attack' => true,
+                    'attack_type' => 'XSS',
+                    'confidence' => 90.0
+                ];
+            }
+        }
+        
+        return null; // No threat detected manually
     }
 
     private static function analyzeWithPythonService(array $payload): ?array
@@ -109,13 +189,21 @@ class AIThreatDetectionMiddleware
             CURLOPT_RETURNTRANSFER => true,
             CURLOPT_CONNECTTIMEOUT_MS => self::CONNECT_TIMEOUT_MS,
             CURLOPT_TIMEOUT_MS => self::TIMEOUT_MS,
+            // FIXED: تجاهل SSL verification في localhost
+            CURLOPT_SSL_VERIFYPEER => false,
+            CURLOPT_SSL_VERIFYHOST => 0,
         ]);
 
         $response = curl_exec($ch);
+        $error = curl_error($ch);
+        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
         curl_close($ch);
 
-        if ($response === false) return null;
-
+        if ($response === false || $httpCode !== 200) {
+            error_log("WAF Service Error: " . ($error ?: "HTTP $httpCode"));
+            return null;
+        }
+        
         $decoded = json_decode($response, true);
         return is_array($decoded) ? $decoded : null;
     }
@@ -124,16 +212,16 @@ class AIThreatDetectionMiddleware
     {
         try {
             $db = Database::getInstance();
-
+            
             $attackType = $prediction['attack_type'] ?? 'Unknown Attack';
             $confidence = $prediction['confidence'] ?? 0;
             $ipAddress = $_SERVER['REMOTE_ADDR'] ?? '::1';
             $requestUrl = $_SERVER['REQUEST_URI'] ?? '';
             $requestMethod = $_SERVER['REQUEST_METHOD'] ?? 'POST';
-
-            $usernameAttempt = $payload['request_data']['post']['username'] ??
+            
+            $usernameAttempt = $payload['request_data']['post']['username'] ?? 
                                $payload['request_data']['post']['username_or_email'] ?? NULL;
-
+            
             $description = "AI Shield Blocked a " . $attackType . " attempt. Payload: " . json_encode($payload['request_data'], JSON_UNESCAPED_UNICODE);
 
             $db->query(
@@ -150,7 +238,10 @@ class AIThreatDetectionMiddleware
                     $confidence
                 ]
             );
+            
+            // إشعار للأدمن
             addNotification(null, 'admin', 'security', '🚨 New Attack Blocked', "Blocked a {$attackType} attempt from IP {$ipAddress}");
+            
         } catch (Exception $e) {
             error_log("WAF DB Logging Failed: " . $e->getMessage());
         }
@@ -159,19 +250,20 @@ class AIThreatDetectionMiddleware
     private static function blockRequest(array $prediction): void
     {
         if (ob_get_level()) ob_clean();
-
+        
         http_response_code(403);
-
+        
         $attackType = htmlspecialchars($prediction['attack_type'] ?? 'Unknown');
         $confidence = htmlspecialchars(($prediction['confidence'] ?? 0) . '%');
         $timestamp = date('Y-m-d H:i:s');
-
+        
         $jsonPayload = json_encode([
             'error' => 'Security violation detected. Request blocked by AI WAF.',
             'attack_type' => $attackType,
             'confidence' => $confidence,
             'shield' => 'AI-Powered Security Shield',
-            'timestamp' => $timestamp
+            'timestamp' => $timestamp,
+            'your_ip' => $_SERVER['REMOTE_ADDR'] ?? 'unknown'
         ], JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE);
 
         echo "
@@ -199,17 +291,21 @@ class AIThreatDetectionMiddleware
         </body>
         </html>
         ";
-
+        
         exit;
     }
 }
 
-// ✅ Run WAF (but NOT for API endpoints — they handle their own security)
-$currentUri = strtolower($_SERVER['REQUEST_URI'] ?? '');
-if (!str_contains($currentUri, 'api/quizzes.php') && !str_contains($currentUri, 'api/assignments.php')) {
-    AIThreatDetectionMiddleware::handleGlobalRequest();
-}
+// ✅ تشغيل الـ WAF فوراً قبل أي عملية معالجة أخرى
+AIThreatDetectionMiddleware::handleGlobalRequest();
 
+// ========== START SESSION ==========
+if (session_status() === PHP_SESSION_NONE) session_start();
+
+require_once __DIR__ . '/db.php';
+
+// ========== CSRF PROTECTION ==========
+// ... (باقي الكود زي ما هو)
 // ========== CSRF PROTECTION ==========
 
 function generateCSRFToken() {

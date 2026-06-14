@@ -1,0 +1,29 @@
+UPDATE quiz_attempts qa
+JOIN quizzes q ON qa.quiz_id = q.id
+SET 
+    qa.total_marks = q.total_marks,
+    qa.percentage = CASE 
+        WHEN qa.score IS NOT NULL AND q.total_marks > 0 
+        THEN ROUND((qa.score / q.total_marks) * 100, 2)
+        ELSE NULL 
+    END
+WHERE qa.status IN ('submitted', 'graded', 'auto_submitted');
+
+DELIMITER //
+CREATE TRIGGER trg_quiz_total_marks_update
+AFTER UPDATE ON quizzes
+FOR EACH ROW
+BEGIN
+    IF OLD.total_marks != NEW.total_marks THEN
+        UPDATE quiz_attempts qa
+        SET 
+            qa.total_marks = NEW.total_marks,
+            qa.percentage = CASE 
+                WHEN qa.score IS NOT NULL AND NEW.total_marks > 0 
+                THEN ROUND((qa.score / NEW.total_marks) * 100, 2)
+                ELSE qa.percentage 
+            END
+        WHERE qa.quiz_id = NEW.id;
+    END IF;
+END//
+DELIMITER ;

@@ -35,7 +35,7 @@ $navItems = [
     'student' => [
         ['icon' => '&#127968;', 'label' => 'Dashboard', 'page' => 'dashboard', 'link' => '/student/dashboard.php'],
         ['icon' => '&#128218;', 'label' => 'My Courses', 'page' => 'courses', 'link' => '/student/dashboard.php?section=courses'],
-        ['icon' => '&#128203;', 'label' => 'To-Do List', 'page' => 'todo', 'link' => '/student/dashboard.php?section=todo'],
+        // ['icon' => '&#128203;', 'label' => 'To-Do List', 'page' => 'todo', 'link' => '/student/dashboard.php?section=todo'],
         ['icon' => '&#128221;', 'label' => 'Quizzes', 'page' => 'quizzes', 'link' => '/student/dashboard.php?section=quizzes'],
         ['icon' => '&#128193;', 'label' => 'Assignments', 'page' => 'assignments', 'link' => '/student/dashboard.php?section=assignments'],
         ['icon' => '&#127891;', 'label' => 'My Grades', 'page' => 'grades', 'link' => '/student/dashboard.php?section=grades'],
