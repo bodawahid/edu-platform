@@ -27,3 +27,8 @@ BEGIN
     END IF;
 END//
 DELIMITER ;
+--------------------
+$db->query(
+    "UPDATE quiz_attempts SET status = 'submitted' WHERE id = ? AND status = 'started'",
+    [$attempt['id']]
+);
