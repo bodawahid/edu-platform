@@ -28,7 +28,5 @@ BEGIN
 END//
 DELIMITER ;
 --------------------
-$db->query(
-    "UPDATE quiz_attempts SET status = 'submitted' WHERE id = ? AND status = 'started'",
-    [$attempt['id']]
-);
+ALTER TABLE quiz_attempts 
+MODIFY COLUMN status ENUM('started', 'submitted', 'graded', 'auto_submitted') NOT NULL DEFAULT 'started';
